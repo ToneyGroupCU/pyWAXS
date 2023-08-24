@@ -1,3 +1,8 @@
+# - Custom Ignores
+.DS_Store
+cif_repo_local/
+pyWAXS_nslsiijupyterhub/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
