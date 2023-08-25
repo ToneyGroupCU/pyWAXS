@@ -93,6 +93,7 @@ dependencies:
   - hdf5plugin=4.1.1=py311h921a24a_1
   - icu=70.1=h96cf925_0
   - idna=3.4=pyhd8ed1ab_0
+  - imageio=2.31.1=pyh24c5eb1_0
   - importlib-metadata=6.6.0=pyha770c72_0
   - importlib_metadata=6.6.0=hd8ed1ab_0
   - ipykernel=6.23.1=pyh736e0ef_0

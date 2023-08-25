@@ -8,6 +8,8 @@ from PIL import Image
 from typing import Union, Tuple
 import matplotlib.pyplot as plt
 import json, zarr
+# from imageio import imwrite
+from tifffile import TiffWriter
 
 # - Custom Imports
 from WAXSTransform import WAXSTransform
@@ -84,13 +86,22 @@ class WAXSAnalyze:
     def exportzarr(self, zarrPath: Union[str, pathlib.Path], projectName: str):
         # Create the project directory
         project_path = pathlib.Path(zarrPath) / projectName
-        project_path.mkdir(parents=True, exist_ok=True)
+        if project_path.exists():
+            # Handle existing project folder (e.g., ask for confirmation or raise an error)
+            raise FileExistsError(f"Project folder '{project_path}' already exists. Choose a different project name or remove the existing folder.")
+        project_path.mkdir(parents=True, exist_ok=False)  # exist_ok=False ensures that an error is raised if the folder exists
 
-        # Save xarray DataArrays as Zarr files
+        # Save xarray DataArrays as Zarr files and TIFF images
         for key in ['rawtiff_xr', 'reciptiff_xr', 'cakedtiff_xr']:
             ds = self.__dict__[key].to_dataset(name=key)
             ds_path = project_path / f"{key}.zarr"
             ds.to_zarr(ds_path)
+
+            # Convert the xarray DataArray to a numpy array and save as TIFF
+            tiff_image = ds[key].values
+            tiff_path = project_path / f"{projectName}_{key}.tiff"
+            with TiffWriter(str(tiff_path)) as tif:
+                tif.save(tiff_image.astype(np.uint16))  # Adjust dtype as needed
 
         # Save other attributes to a JSON file
         attributes_to_save = {
@@ -241,7 +252,7 @@ class WAXSAnalyze:
         self.reciptiff_xr.plot.imshow(interpolation='antialiased', cmap='jet',
                                     vmin=np.nanpercentile(self.reciptiff_xr, 10),
                                     vmax=np.nanpercentile(self.reciptiff_xr, 99))
-        plt.title('Reciprocal Space Corrected Image')
+        plt.title('Missing Wedge Correction')
         plt.show()
 
 # -- Display the Caked Image using XArray
@@ -250,10 +261,14 @@ class WAXSAnalyze:
         self.cakedtiff_xr.plot.imshow(interpolation='antialiased', cmap='jet',
                                     vmin=np.nanpercentile(self.cakedtiff_xr, 10),
                                     vmax=np.nanpercentile(self.cakedtiff_xr, 99))
-        plt.title('Caked Corrected Image')
+        plt.title('Caked Image')
         plt.show()
 
 # -- Image Processing: Filtering/Smoothing, Peak Searching, Indexing
+    def filter_and_smooth(self, sigma=1):
+        # Applying Gaussian smoothing to the corrected TIFF
+        self.corrected_tiff = gaussian_filter(self.corrected_tiff, sigma=sigma)
+
     def detect_2D_peaks(self, threshold=0.5):
         # Finding peaks in image intensity
         peaks = find_peaks(self.corrected_tiff, threshold)
@@ -262,9 +277,6 @@ class WAXSAnalyze:
         # Getting coordinates with respect to the image
         self.peak_positions_coords = [self.pixel_to_coords(pixel) for pixel in self.peak_positions_pixel]
 
-    def filter_and_smooth(self, sigma=1):
-        # Applying Gaussian smoothing to the corrected TIFF
-        self.corrected_tiff = gaussian_filter(self.corrected_tiff, sigma=sigma)
 
 '''
     def createSampleDictionary(self, root_folder):
