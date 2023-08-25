@@ -22,7 +22,8 @@ class WAXSTransform:
                  poniPath: Union[str, pathlib.Path], 
                  maskPath: Union[str, pathlib.Path, np.ndarray], 
                  inplane_config: str = 'q_xy', 
-                 energy: float = None):
+                 energy: float = 12.7,
+                 incident_angle = 0):
         """
         Attributes:
         poniPath (pathlib Path or str): Path to .poni file for converting to q-space 
@@ -46,6 +47,11 @@ class WAXSTransform:
         else:
             self.energy = None
             self.wavelength = None
+        
+        if incident_angle:
+            self.incident_angle = incident_angle
+        else:
+            self.incident_angle = 0.3
 
     def load_mask(self, da):
         """Load the mask file based on its file type."""
@@ -80,7 +86,40 @@ class WAXSTransform:
         pg = pygix.Transform()
         pg.load(str(self.poniPath))
         pg.sample_orientation = 3 # could add this as optional method parameter in the handle
-        pg.incident_angle = float(da.incident_angle[2:])
+        
+        # Method to extract incident angle from attributes using list of possible aliases.
+        def get_incident_angle(attributes, aliases, default=0.3):
+            for alias in aliases:
+                if alias in attributes:
+                    # Extract numerical part from the string, including the decimal point
+                    numerical_part = ''.join(c for c in attributes[alias] if c.isdigit() or c == '.')
+                    # Check if the extracted part is a valid float number
+                    try:
+                        return float(numerical_part)
+                    except ValueError:
+                        pass
+            print(f"Warning: Incident angle not found. Defaulting to {default}. "
+                f"Allowed aliases for incident angle: {', '.join(aliases)}")
+            return default
+
+        # List of aliases to look for the incident angle
+        incident_angle_aliases = ['incident_angle', 
+                                  'thpos', 
+                                  'th', 
+                                  'theta', 
+                                  'incidence', 
+                                  'inc_angle', 
+                                  'angle_of_incidence'
+                                  'incang',
+                                  'incangle'
+                                  'inc_angle']
+
+        # Get the incident angle using the aliases
+        self.incident_angle = get_incident_angle(da.attrs, incident_angle_aliases)
+        pg.incident_angle = self.incident_angle
+
+        # update to grab incident angle from keylist properly.
+        # pg.incident_angle = float(da.incident_angle[2:])
         if self.wavelength:
             pg.wavelength = self.wavelength
 

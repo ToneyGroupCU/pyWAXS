@@ -1,0 +1,22 @@
+{
+    "_ARRAY_DIMENSIONS": [
+        "chi",
+        "qr"
+    ],
+    "chemistry": "3MAI1PbI2",
+    "clocktime": "1749.9s",
+    "concentration": "1p0M",
+    "detext": "maxs",
+    "exptime": "0.49s",
+    "filter": "unfilt",
+    "framenum": "001639",
+    "inplane_config": "q_xy",
+    "purge_rate": "5p0scfh",
+    "runnum": "046",
+    "samplenum": "sam27",
+    "scanID": "986653",
+    "solution_volume": "30uL",
+    "substrate": "Si",
+    "thpos": "th0.300",
+    "xpos": "x0.017"
+}

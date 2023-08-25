@@ -1,0 +1,21 @@
+{
+    "_ARRAY_DIMENSIONS": [
+        "pix_y",
+        "pix_x"
+    ],
+    "chemistry": "1MAI1PbI2",
+    "clocktime": "2068.2s",
+    "concentration": "0p3M",
+    "detext": "maxs",
+    "exptime": "0.49s",
+    "filter": "unfilt",
+    "framenum": "001639",
+    "purge_rate": "5p0scfh",
+    "runnum": "043",
+    "samplenum": "sam22",
+    "scanID": "986546",
+    "solution_volume": "30uL",
+    "substrate": "Si",
+    "thpos": "th0.300",
+    "xpos": "x0.015"
+}

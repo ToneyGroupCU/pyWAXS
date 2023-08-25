@@ -1,26 +1,27 @@
-import tifffile
-import pyFAI
+import os, pathlib, tifffile, pyFAI
 import pygix
 import xarray as xr
 import numpy as np
 from scipy.ndimage.filters import gaussian_filter
 from scipy.signal import find_peaks
-import os
-import pathlib
 from PIL import Image
 from typing import Union, Tuple
+import matplotlib.pyplot as plt
+import json, zarr
 
 # - Custom Imports
-import WAXSTransform
+from WAXSTransform import WAXSTransform
 
 class WAXSAnalyze:
     def __init__(self, 
-                 poniPath: Union[str, pathlib.Path], 
-                 maskPath: Union[str, pathlib.Path, np.ndarray],
-                 inplane_config: str = 'q_xy', 
-                 energy: float = None,
+                 poniPath: Union[str, pathlib.Path] = None, 
+                 maskPath: Union[str, pathlib.Path, np.ndarray]  = None,
+                 tiffPath: Union[str, pathlib.Path, np.ndarray]  = None,
                  metadata_keylist=[], 
-                 tiffPath = None):
+                 inplane_config: str = 'q_xy', 
+                 energy: float = 12.7,
+                 zarrPath: Union[str, pathlib.Path] = None,
+                 projectName: str = 'test'):
        
         """
         Attributes:
@@ -31,43 +32,108 @@ class WAXSAnalyze:
 
         Description: Initialize instance with metadata key list. Default is an empty list.
         """
-
+    
         # - Path Information
-        self.basePath = None # 'root_folder' basePath used throughout the class methods to build additional paths.
-        self.tiffPath = None # TIFF image filepath
-        self.poniPath = None # PONI File Path ('.poni')
-        self.maskPath = None # MASK File Path ('.edf' or '.json')
+        self.basePath = None # datatype: 'str' or pathlib variable, 'root_folder' basePath used throughout the class methods to build additional paths.
+        self.poniPath = poniPath # datatype: 'str' or pathlib variable, PONI File Path ('.poni')
+        self.maskPath = maskPath # datatype: 'str' or pathlib variable, MASK File Path ('.edf' or '.json')
+        self.tiffPath = tiffPath # datatype: 'str' or pathlib variable, TIFF image filepath
+        self.inplane_config = inplane_config # datatype: 'str', in-plane scattering axes label
+        self.energy = energy # datatype: float, energy of your X-rays in keV
 
         # - Metadata Attributes
-        self.metadata_keylist = metadata_keylist # 'md_naming_scheme'
-        self.attribute_dict = None # 'sample_dict'
+        self.metadata_keylist = metadata_keylist # datatype: list, 'md_naming_scheme'
+        self.attribute_dict = None # datatype: dictionary, 'sample_dict'
 
         # - TIFF Image Data
-        self.rawtiff_np = None # RAW TIFF (numpy)
-        self.rawtiff_xr = None # RAW TIFF (xarray)
+        self.rawtiff_np = None # datatype: numpy array, RAW TIFF (numpy)
+        self.rawtiff_xr = None # datatype: xarray DataArray, RAW TIFF (xarray)
         
+        # Check if zarrPath is provided
+        if zarrPath is not None:
+            self.zarrPath = zarrPath
+            if projectName:
+                self.projectName = projectName
+                self.loadzarr(zarrPath = self.zarrPath, 
+                              projectName = self.projectName)
+        else:
+            # Check that the required parameters are provided
+            if poniPath is None or maskPath is None or tiffPath is None:
+                raise ValueError("Must provide either zarrPath or poniPath, maskPath, and tiffPath.")
+
         # - Load the Single Image
         self.loadSingleImage(self.tiffPath)
+        # self.loadMetaData(self.tiffPath, delim='_') # this is done in the loadSingleImage() method
 
-        # - Reciprocal Space Image Corrections Data
-        # self.reciptiff_np = None # Reciprocal Space Corrected TIFF (numpy)
-        self.reciptiff_xr = None # Reciprocal Space Corrected TIFF (xarray)
+        # - Reciprocal Space Image Corrections Data Allocation
+        self.reciptiff_xr = None # datatype: xarray DataArray, Reciprocal Space Corrected TIFF (xarray)
 
-        # - Caked Image Corrections Data
-        # self.cakedtiff_np = None # Caked Corrected TIFF (numpy)
-        self.cakedtiff_xr = None # Caked Space Corrected TIFF (xarray)
+        # - Caked Image Corrections Data Allocation
+        self.cakedtiff_xr = None # datatype: xarray DataArray, Caked Space Corrected TIFF (xarray)
 
         # - Initialize GIXSTransform() object
-        self.gixs_transform = self.detCorrObj()
-        self.caked_data_np, self.recip_data_np, self.qz_np, self.qxy_np, self.chi_np, self.qr_np = None, None, None, None, None, None
+        self.GIXSTransformObj = self.detCorrObj()
         self.apply_image_corrections()
 
+        # self.caked_data_np, self.recip_data_np, self.qz_np, self.qxy_np, self.chi_np, self.qr_np = None, None, None, None, None, None # datatypes: numpy arrays
         # self.peak_positions_pixel = None
         # self.peak_positions_coords = None
         # self.apply_detector_corrections()
 
+    # -- Imports/Exports the current class instantiation when called.
+    def exportzarr(self, zarrPath: Union[str, pathlib.Path], projectName: str):
+        # Create the project directory
+        project_path = pathlib.Path(zarrPath) / projectName
+        project_path.mkdir(parents=True, exist_ok=True)
+
+        # Save xarray DataArrays as Zarr files
+        for key in ['rawtiff_xr', 'reciptiff_xr', 'cakedtiff_xr']:
+            ds = self.__dict__[key].to_dataset(name=key)
+            ds_path = project_path / f"{key}.zarr"
+            ds.to_zarr(ds_path)
+
+        # Save other attributes to a JSON file
+        attributes_to_save = {
+            'basePath': str(self.basePath),
+            'poniPath': str(self.poniPath),
+            'maskPath': str(self.maskPath),
+            'tiffPath': str(self.tiffPath),
+            'metadata_keylist': self.metadata_keylist,
+            'attribute_dict': self.attribute_dict,
+            'energy': self.energy,
+        }
+        json_path = project_path / "attributes.json"
+        with open(json_path, 'w') as file:
+            json.dump(attributes_to_save, file)
+
+    def loadzarr(self, zarrPath: Union[str, pathlib.Path], projectName: str):
+        # Define the project directory
+        project_path = pathlib.Path(zarrPath) / projectName
+
+        # Load xarray DataArrays from Zarr files
+        for key in ['rawtiff_xr', 'reciptiff_xr', 'cakedtiff_xr']:
+            ds_path = project_path / f"{key}.zarr"
+            ds = xr.open_zarr(ds_path)
+            self.__dict__[key] = ds[key]
+
+        # Load other attributes from the JSON file
+        json_path = project_path / "attributes.json"
+        with open(json_path, 'r') as file:
+            attributes = json.load(file)
+            self.basePath = pathlib.Path(attributes['basePath'])
+            self.poniPath = pathlib.Path(attributes['poniPath'])
+            self.maskPath = pathlib.Path(attributes['maskPath'])
+            self.tiffPath = pathlib.Path(attributes['tiffPath'])
+            self.metadata_keylist = attributes['metadata_keylist']
+            self.attribute_dict = attributes['attribute_dict']
+            self.energy = attributes['energy']
+
+        # Rebuild GIXSTransformObj and load single image
+        self.GIXSTransformObj = self.detCorrObj()
+        self.loadSingleImage(self.tiffPath)
+
 # -- Image & Metadata Loading
-    def loadSingleImage(self, tiffPath):
+    def loadSingleImage(self, tiffPath: Union[str, pathlib.Path, np.ndarray]):
         """
         Loads a single xarray DataArray from a filepath to a raw TIFF
         """
@@ -86,14 +152,14 @@ class WAXSAnalyze:
         self.attribute_dict = self.loadMetaData(tiffPath)
 
         # - Convert the image numpy array into an xarray DataArray object.
-        self.rawtiff_xarray = xr.DataArray(data=self.rawtiff_numpy,
+        self.rawtiff_xr = xr.DataArray(data=self.rawtiff_numpy,
                                              dims=['pix_y', 'pix_x'],
                                              attrs=self.attribute_dict)
         
         # - Map the pixel dimensions to the xarray.
-        self.rawtiff_xarray = self.rawtiff_xarray.assign_coords({
-            'pix_x': self.rawtiff_xarray.pix_x.data,
-            'pix_y': self.rawtiff_xarray.pix_y.data
+        self.rawtiff_xr = self.rawtiff_xr.assign_coords({
+            'pix_x': self.rawtiff_xr.pix_x.data,
+            'pix_y': self.rawtiff_xr.pix_y.data
         })
 
     def loadMetaData(self, tiffPath, delim='_'):
@@ -132,9 +198,12 @@ class WAXSAnalyze:
         """
 
         # Instantiate the GIXSTransform object using necessary parameters
-        gixs_transform = WAXSTransform(self.poniPath, self.maskPath, ...) # Additional parameters if needed, such as pixel splitting method or corrections (solid angle)
-        return gixs_transform
+        GIXSTransformObj = WAXSTransform(poniPath = self.poniPath, 
+                                         maskPath = self.maskPath,
+                                         energy = self.energy) # Additional parameters if needed, such as pixel splitting method or corrections (solid angle)
+        return GIXSTransformObj
 
+# -- Generate the caked and reciprocal space corrected datasets.
     def apply_image_corrections(self):
         """
         Utilizes the GIXSTransform object to create image corrections.
@@ -142,9 +211,10 @@ class WAXSAnalyze:
         """
 
         # Call the pg_convert method using the rawtiff_xr xarray
-        self.reciptiff_xr, self.cakedtiff_xr = self.gixs_transform.pg_convert(self.rawtiff_xr)
+        self.reciptiff_xr, self.cakedtiff_xr = self.GIXSTransformObj.pg_convert(self.rawtiff_xr)
         self.convert_to_numpy()
 
+# -- Conversion to numpy to store in the object instance in case we need these.
     def convert_to_numpy(self):
         recip_da = self.reciptiff_xr
         caked_da = self.cakedtiff_xr
@@ -155,6 +225,33 @@ class WAXSAnalyze:
         self.qxy_np = recip_da[self.inplane_config].data
         self.chi_np = caked_da['chi'].data
         self.qr_np = caked_da['qr'].data
+
+# -- Display the RAW TIFF using XArray
+    def rawdisplay_xr(self):
+        plt.close('all')
+        self.rawtiff_xr.plot.imshow(interpolation='antialiased', cmap='jet',
+                                    vmin=np.nanpercentile(self.rawtiff_xr, 10),
+                                    vmax=np.nanpercentile(self.rawtiff_xr, 99))
+        plt.title('Raw TIFF Image')
+        plt.show()
+
+# -- Display the Reciprocal Space Map using XArray
+    def recipdisplay_xr(self):
+        plt.close('all')
+        self.reciptiff_xr.plot.imshow(interpolation='antialiased', cmap='jet',
+                                    vmin=np.nanpercentile(self.reciptiff_xr, 10),
+                                    vmax=np.nanpercentile(self.reciptiff_xr, 99))
+        plt.title('Reciprocal Space Corrected Image')
+        plt.show()
+
+# -- Display the Caked Image using XArray
+    def cakeddisplay_xr(self):
+        plt.close('all')
+        self.cakedtiff_xr.plot.imshow(interpolation='antialiased', cmap='jet',
+                                    vmin=np.nanpercentile(self.cakedtiff_xr, 10),
+                                    vmax=np.nanpercentile(self.cakedtiff_xr, 99))
+        plt.title('Caked Corrected Image')
+        plt.show()
 
 # -- Image Processing: Filtering/Smoothing, Peak Searching, Indexing
     def detect_2D_peaks(self, threshold=0.5):
@@ -168,7 +265,6 @@ class WAXSAnalyze:
     def filter_and_smooth(self, sigma=1):
         # Applying Gaussian smoothing to the corrected TIFF
         self.corrected_tiff = gaussian_filter(self.corrected_tiff, sigma=sigma)
-
 
 '''
     def createSampleDictionary(self, root_folder):
@@ -343,4 +439,75 @@ class WAXSAnalyze:
 
                 print("\nSelection completed.")
             return self.selected_series
+
+# -- Display the RAW TIFF using Matplotlib
+    def rawdisplay(self):
+        plt.close('all')
+        # plt.imshow(self.rawtiff_xr, cmap='jet')
+        lb = np.nanpercentile(self.rawtiff_xr, 10)
+        ub = np.nanpercentile(self.rawtiff_xr, 99)
+
+        extent = [self.rawtiff_xr['pix_x'].min(), self.rawtiff_xr['pix_x'].max(),
+          self.rawtiff_xr['pix_y'].min(), self.rawtiff_xr['pix_y'].max()]
+        
+        plt.imshow(self.rawtiff_xr, 
+                   interpolation='nearest', 
+                   cmap='jet',
+                   origin='lower', 
+                   vmax=ub, 
+                   vmin=lb,
+                   extent=extent)
+        plt.xlabel(self.rawtiff_xr['pix_x'].name)
+        plt.ylabel(self.rawtiff_xr['pix_y'].name)
+        plt.title('Raw TIFF Image')
+        plt.colorbar(label='Intensity')
+        plt.show()
+
+# -- Display the Reciprocal Space Map Corrected TIFF using Matplotlib
+    def recipdisplay(self):
+        plt.close('all')
+        lb = np.nanpercentile(self.reciptiff_xr, 10)
+        ub = np.nanpercentile(self.reciptiff_xr, 99)
+
+        extent = [self.reciptiff_xr[self.inplane_config].min(), self.reciptiff_xr[self.inplane_config].max(),
+                self.reciptiff_xr['q_z'].min(), self.reciptiff_xr['q_z'].max()]
+
+        plt.imshow(self.reciptiff_xr,
+                interpolation='nearest',
+                cmap='jet',
+                origin='lower',
+                vmax=ub,
+                vmin=lb,
+                extent=extent)
+
+        plt.xlabel(self.reciptiff_xr[self.inplane_config].name) # 'q$_{xy}$ (1/$\AA$)'
+        plt.ylabel(self.reciptiff_xr['q_z'].name) # 'q$_{z}$ (1/$\AA$)'
+        plt.title('Reciprocal Space Corrected Image')
+        plt.colorbar(label='Intensity')
+        plt.show()
+
+# -- Display the Caked TIFF using Matplotlib
+    def cakeddisplay(self):
+        plt.close('all')
+        # plt.imshow(self.cakedtiff_xr, cmap='jet')
+        lb = np.nanpercentile(self.cakedtiff_xr, 10)
+        ub = np.nanpercentile(self.cakedtiff_xr, 99)
+
+        extent = [self.cakedtiff_xr['qr'].min(), self.cakedtiff_xr['qr'].max(),
+                self.cakedtiff_xr['chi'].min(), self.cakedtiff_xr['chi'].max()]
+
+        plt.imshow(self.cakedtiff_xr,
+                interpolation='nearest',
+                cmap='jet',
+                origin='lower',
+                vmax=ub,
+                vmin=lb,
+                extent=extent)
+
+        plt.xlabel(self.cakedtiff_xr['qr'].name)
+        plt.ylabel(self.cakedtiff_xr['chi'].name)
+        plt.title('Caked Corrected Image')
+        plt.colorbar(label='Intensity')
+        plt.show()
+
 '''
