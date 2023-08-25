@@ -277,7 +277,30 @@ class WAXSAnalyze:
         # Getting coordinates with respect to the image
         self.peak_positions_coords = [self.pixel_to_coords(pixel) for pixel in self.peak_positions_pixel]
 
-
+    # Normalize Intensity
+    # Filter (Gaussian Noise)
+    # Singular Value Decomposition (SVD) to remove noise and reconstruct peaks.
+    # Find Peaks (Monte Carlo - Momentum Gradient Ascent)
+    # Group Peak Points/Bin Peaks
+        # Manual Regrouping Option
+    # Tabulate Coordinates & Intensity of Peaks
+        # Store Normalization, Filtering, SVD Compression, Search Algorithm (neighborhood) and Peak Position Data as a .json
+    
+    # -- Experiment Class
+    # Predictive Algorithm for 'Best Initial Guess'
+        # Input constraints on lattice parameters
+        # Look for and tabulate multiples of peaks in q_xy 
+        # Look for and tabulate multiples of peaks in q_z
+        # Provide best guess with confidence and error for the lattice constants
+        # Select set of peaks to evaluate sigma values for azimuthal smearing
+    # Load CIFs into DiffSim object
+    # Load 'Best Initial Guess' to match appropriate CIF and orientation parameters
+    # Simulate Bragg Peak Positions in CIFs (no intensity)
+        # Load possible CIFs to test against a, b, c, alpha, beta, gamma values
+            # Comparator Bragg Peak Simulation (Compute Crystal)
+        # Best match for position, simulate intensities and smearing from initial guesses.
+            # diffraction .py
+    # 
 '''
     def createSampleDictionary(self, root_folder):
         """
