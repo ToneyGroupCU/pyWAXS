@@ -1,15 +1,20 @@
-import os, pathlib, tifffile, pyFAI
-import pygix
+import os, pathlib, tifffile, pyFAI, pygix, json, zarr, random
 import xarray as xr
 import numpy as np
 from scipy.ndimage.filters import gaussian_filter
+from scipy.ndimage import gaussian_filter
 from scipy.signal import find_peaks
+from scipy.spatial.distance import cdist
+from scipy.optimize import curve_fit
+from scipy.spatial import KDTree
+from scipy.interpolate import griddata
 from PIL import Image
 from typing import Union, Tuple
 import matplotlib.pyplot as plt
-import json, zarr
-# from imageio import imwrite
 from tifffile import TiffWriter
+from skimage.restoration import denoise_bilateral, denoise_tv_chambolle
+from collections import defaultdict
+
 
 # - Custom Imports
 from WAXSTransform import WAXSTransform
@@ -74,8 +79,13 @@ class WAXSAnalyze:
         self.cakedtiff_xr = None # datatype: xarray DataArray, Caked Space Corrected TIFF (xarray)
 
         # - Initialize GIXSTransform() object
-        self.GIXSTransformObj = self.detCorrObj()
-        self.apply_image_corrections()
+        self.GIXSTransformObj = self.detCorrObj() # Create Detector Object
+        self.apply_image_corrections() # Apply Image Corrections
+        
+        # - Image Smoothing & Normalization
+        self.smoothed_img = None # Store Smoothed Image
+        self.normalized_img = None # Store Normalized Image
+        self.snrtemp = None # Temporary signal-to-noise ratio 
 
         # self.caked_data_np, self.recip_data_np, self.qz_np, self.qxy_np, self.chi_np, self.qr_np = None, None, None, None, None, None # datatypes: numpy arrays
         # self.peak_positions_pixel = None
@@ -143,7 +153,7 @@ class WAXSAnalyze:
         self.GIXSTransformObj = self.detCorrObj()
         self.loadSingleImage(self.tiffPath)
 
-# -- Image & Metadata Loading
+# -- Image Loading
     def loadSingleImage(self, tiffPath: Union[str, pathlib.Path, np.ndarray]):
         """
         Loads a single xarray DataArray from a filepath to a raw TIFF
@@ -173,6 +183,7 @@ class WAXSAnalyze:
             'pix_y': self.rawtiff_xr.pix_y.data
         })
 
+# -- Metadata Loading
     def loadMetaData(self, tiffPath, delim='_'):
         """
         Description: Uses metadata_keylist to generate attribute dictionary of metadata based on filename.
@@ -220,10 +231,21 @@ class WAXSAnalyze:
         Utilizes the GIXSTransform object to create image corrections.
         Updates the reciptiff_xr and cakedtiff_xr attributes with the corrected xarray DataArrays.
         """
-
+        
         # Call the pg_convert method using the rawtiff_xr xarray
         self.reciptiff_xr, self.cakedtiff_xr = self.GIXSTransformObj.pg_convert(self.rawtiff_xr)
         self.convert_to_numpy()
+        
+        # Update the coordinate system for the images
+        self.coords = {
+            'x_min': self.reciptiff_xr[self.inplane_config].min(),
+            'x_max': self.reciptiff_xr[self.inplane_config].max(),
+            'y_min': self.reciptiff_xr['q_z'].min(),
+            'y_max': self.reciptiff_xr['q_z'].max()
+            }
+
+        # Calculate the Signal-to-Noise Ratio for each xarray in the class
+        self.calculate_SNR_for_class()
 
 # -- Conversion to numpy to store in the object instance in case we need these.
     def convert_to_numpy(self):
@@ -264,11 +286,364 @@ class WAXSAnalyze:
         plt.title('Caked Image')
         plt.show()
 
-# -- Image Processing: Filtering/Smoothing, Peak Searching, Indexing
+ # -- Display Image
+    def display_image(self, img, title='Image', cmap='jet'):
+        plt.close('all')
+        
+        # Check for invalid or incompatible types
+        if img is None or not isinstance(img, (np.ndarray, xr.DataArray)):
+            raise ValueError("The input image is None or not of a compatible type.")
+        
+        # Check for xarray DataArray and convert to numpy array if needed
+        if isinstance(img, xr.DataArray):
+            img = img.values
+            
+        # Check for empty or all NaN array
+        if np.all(np.isnan(img)) or img.size == 0:
+            raise ValueError("The input image is empty or contains only NaN values.")
+                
+        vmin = np.nanpercentile(img, 10)
+        vmax = np.nanpercentile(img, 99)
+
+        if self.coords is not None:
+            plt.imshow(np.flipud(img), cmap=cmap, vmin=vmin, vmax=vmax, 
+                    extent=[self.coords['x_min'], 
+                            self.coords['x_max'], 
+                            self.coords['y_min'], 
+                            self.coords['y_max']])
+        else:
+            plt.imshow(np.flipud(img), 
+                    cmap=cmap, 
+                    vmin=vmin, 
+                    vmax=vmax)
+
+        plt.title(title)
+        plt.xlabel('qxy')
+        plt.ylabel('qz')
+        plt.colorbar()
+        plt.show()
+
+# -- Normalize Image
+    def normalize_image(self, normalizerecip = False):
+        if self.reciptiff_xr is None:
+            raise ValueError("Reciprocal space image data is not available.")
+            
+        img = self.reciptiff_xr.values
+        max_val = np.max(img)
+        if max_val <= 0:
+            raise ValueError("Image maximum intensity is zero or negative, cannot normalize.")
+        
+        self.normalized_img = img / max_val
+
+        if normalizerecip == True:
+            self.reciptiff_xr.values = self.normalized_img
+            self.reciptiff_xr.attrs['normalized'] = True
+        
+        return self.normalized_img
+
+# -- Image Smoothing Algorithm
+    def smooth_image(self, img, method: str = 'gaussian', **kwargs) -> xr.DataArray:
+        """
+        Smooth the input image using the specified method and exclude zero-intensity regions.
+        
+        Parameters:
+            img (xr.DataArray or np.ndarray): Input image to be smoothed.
+            method (str): The smoothing method to use ('gaussian', 'bilateral', 'total_variation', 'anisotropic').
+            **kwargs: Additional parameters for the smoothing method.
+            
+        Returns:
+            xr.DataArray: Smoothed image with the same shape as the input.
+        """
+        
+        # Convert to xarray if input is a numpy array
+        if isinstance(img, np.ndarray):
+            img = xr.DataArray(img)
+            
+        # Create a mask to exclude zero-intensity regions
+        mask = img != 0
+        
+        # Backup original dtype
+        original_dtype = img.dtype
+        
+        if method == 'gaussian':
+            sigma = kwargs.get('sigma', 1)
+            smoothed = gaussian_filter(img.where(mask), sigma)
+        elif method == 'bilateral':
+            sigma_color = kwargs.get('sigma_color', 0.05)
+            sigma_spatial = kwargs.get('sigma_spatial', 15)
+            smoothed = denoise_bilateral(img.where(mask).values, sigma_color=sigma_color, sigma_spatial=sigma_spatial, multichannel=False)
+        elif method == 'total_variation':
+            weight = kwargs.get('weight', 0.1)
+            smoothed = denoise_tv_chambolle(img.where(mask).values, weight=weight)
+        elif method == 'anisotropic':
+            smoothed = img.where(mask).copy()
+        else:
+            raise ValueError("Invalid method. Choose from 'gaussian', 'bilateral', 'total_variation', 'anisotropic'.")
+        
+        # Reapply the original mask to set zero-intensity regions back to zero
+        smoothed = xr.DataArray(smoothed, coords=img.coords, dims=img.dims).where(mask)
+        
+        # Update the smoothed_img attribute
+        self.smoothed_img = smoothed.astype(original_dtype)
+        
+        return self.smoothed_img
+
+    '''
+# -- Image Smoothing Algorithm
+    def smooth_image(self, img, method: str = 'gaussian', **kwargs) -> xr.DataArray:
+        """
+        Smooth the input image using the specified method and exclude zero-intensity regions.
+        
+        Parameters:
+            img (xr.DataArray or np.ndarray): Input image to be smoothed.
+            method (str): The smoothing method to use ('gaussian', 'bilateral', 'total_variation', 'anisotropic').
+            **kwargs: Additional parameters for the smoothing method.
+            
+        Returns:
+            xr.DataArray: Smoothed image with the same shape as the input.
+        """
+        
+        # Convert to xarray if input is a numpy array
+        if isinstance(img, np.ndarray):
+            img = xr.DataArray(img)
+            
+        # Create a mask to exclude zero-intensity regions
+        mask = img != 0
+        
+        # Backup original dtype
+        original_dtype = img.dtype
+        
+        if method == 'gaussian':
+            sigma = kwargs.get('sigma', 1)
+            smoothed = gaussian_filter(img.where(mask), sigma)
+        elif method == 'bilateral':
+            sigma_color = kwargs.get('sigma_color', 0.05)
+            sigma_spatial = kwargs.get('sigma_spatial', 15)
+            smoothed = denoise_bilateral(img.where(mask).values, sigma_color=sigma_color, sigma_spatial=sigma_spatial, multichannel=False)
+        elif method == 'total_variation':
+            weight = kwargs.get('weight', 0.1)
+            smoothed = denoise_tv_chambolle(img.where(mask).values, weight=weight)
+        elif method == 'anisotropic':
+            smoothed = img.where(mask).copy()
+        else:
+            raise ValueError("Invalid method. Choose from 'gaussian', 'bilateral', 'total_variation', 'anisotropic'.")
+        
+        smoothed = xr.DataArray(smoothed, coords=img.coords, dims=img.dims)
+        self.smoothed_img = smoothed.astype(original_dtype)
+        return self.smoothed_img
+    '''
+
+# -- Calculating Signal-to-Noise Ratio (Internal)
+    def calculate_SNR_for_class(self):
+        """
+        Calculate the Signal-to-Noise Ratio (SNR) for all xarray DataArrays stored as class attributes.
+        Saves the calculated SNR as an attribute of each xarray DataArray.
+        """
+        for attr_name in ['rawtiff_xr', 'reciptiff_xr', 'cakedtiff_xr']:
+            xarray_obj = getattr(self, attr_name, None)
+            if xarray_obj is not None:
+                mask = xarray_obj != 0
+                mean_val = np.mean(xarray_obj.where(mask).values)
+                std_val = np.std(xarray_obj.where(mask).values)
+                xarray_obj.attrs['snr'] = mean_val / std_val
+
+    def calculate_SNR(self, xarray_obj: xr.DataArray) -> float:
+        """
+        Calculate the Signal-to-Noise Ratio (SNR) for an input xarray DataArray.
+        
+        Parameters:
+            xarray_obj (xr.DataArray): Input xarray DataArray for SNR calculation.
+            
+        Returns:
+            float: Calculated SNR value.
+        """
+        if not isinstance(xarray_obj, xr.DataArray):
+            raise ValueError("Input must be an xarray DataArray.")
+            
+        mask = xarray_obj != 0
+        mean_val = np.mean(xarray_obj.where(mask).values)
+        std_val = np.std(xarray_obj.where(mask).values)
+        snr = mean_val / std_val
+        xarray_obj.attrs['snr'] = snr
+        self.snrtemp = snr
+        return xarray_obj
+
+    def cartesian_to_polar(q_xy, q_z):
+        """
+        Convert Cartesian coordinates (q_xy, q_z) to polar coordinates (q_r, chi).
+        
+        Parameters:
+            q_xy (np.ndarray): Array of in-plane momentum transfer values.
+            q_z (np.ndarray): Array of out-of-plane momentum transfer values.
+            
+        Returns:
+            q_r (np.ndarray): Array of radial distance values.
+            chi (np.ndarray): Array of angle values in degrees.
+        """
+        q_r = np.sqrt(q_xy ** 2 + q_z ** 2)
+        chi = np.degrees(np.arctan2(q_xy, q_z))
+        return q_r, chi
+
+    def interpolate_image(self, img: xr.DataArray, pixel_tolerance: float = 0.1) -> xr.DataArray:
+        # Step 1: Conversion to Polar Coordinates
+        q_xy, q_z = np.meshgrid(img.coords['q_xy'], img.coords['q_z'])
+        q_r = np.sqrt(q_xy**2 + q_z**2)
+        chi = np.arctan2(q_xy, q_z)
+        
+        # Step 2: Masking
+        mask = img != 0
+        
+        # Create KDTree for efficient spatial search
+        coords = np.column_stack((q_r[mask], chi[mask]))
+        tree = KDTree(coords)
+        
+        # Step 3: Interpolation along q_r
+        zero_pixels = np.column_stack((q_r[~mask], chi[~mask]))
+        interpolated_values = np.zeros(zero_pixels.shape[0])
+        
+        for i, (q, c) in enumerate(zero_pixels):
+            # Find pixels within the pixel_tolerance in q_r
+            idx = tree.query_ball_point([q, c], pixel_tolerance)
+            if len(idx) == 0:
+                continue  # Skip if no neighbors found
+            neighbors = coords[idx]
+            values = img.values[(neighbors[:, 0], neighbors[:, 1])]
+            interpolated_values[i] = np.mean(values)
+            
+        # Step 4: Special Interpolation at q_z = 0
+        qz_zero_pixels = zero_pixels[np.isclose(zero_pixels[:, 1], 0, atol=1e-6)]
+        for q in qz_zero_pixels[:, 0]:
+            # Gather 40 pixels on either side
+            idx = tree.query_ball_point([q, 0], pixel_tolerance, count_only=40)
+            neighbors = coords[idx]
+            values = img.values[(neighbors[:, 0], neighbors[:, 1])]
+            
+            # Fit Gaussian
+            popt, _ = curve_fit(self.gaussian, neighbors[:, 0], values)
+            interpolated_values[qz_zero_pixels[:, 0] == q] = self.gaussian(q, *popt)
+            
+        # Step 5: Apply Interpolation
+        img.values[~mask] = interpolated_values
+        
+        return img
+    
+    # Gaussian function for curve fitting
+    def gaussian(self, x, a, b, c):
+        return a * np.exp(-((x - b)**2) / (2 * c**2))
+
+    # Method for generating Monte Carlo points
+    def generate_monte_carlo_points(self, num_points=100):
+        img = self.reciptiff_xr.values
+        x_max, y_max = img.shape
+        points = [(random.randint(0, x_max-1), random.randint(0, y_max-1)) for _ in range(num_points)]
+        return points
+
+    # Method for adaptive gradient ascent
+    def adaptive_gradient_ascent(self, point, threshold=0.001, initial_neighborhood=3):
+        x, y = point
+        img = self.normalized_img
+        neighborhood_size = initial_neighborhood
+        max_x, max_y = img.shape
+        # Add history to check for convergence
+        history = []
+
+        while True:
+            x = max(0, min(x, max_x - 1))
+            y = max(0, min(y, max_y - 1))
+
+            if img[x, y] <= 0:
+                x, y = x + 1, y + 1
+                continue
+
+            x_min = max(0, x - neighborhood_size)
+            x_max = min(img.shape[0], x + neighborhood_size)
+            y_min = max(0, y - neighborhood_size)
+            y_max = min(img.shape[1], y + neighborhood_size)
+            
+            neighborhood = img[x_min:x_max, y_min:y_max]
+            local_max_x, local_max_y = np.unravel_index(neighborhood.argmax(), neighborhood.shape)
+            local_max_x += x_min
+            local_max_y += y_min
+
+            history.append((local_max_x, local_max_y))
+            if len(history) > 50:
+                last_50 = np.array(history[-50:])
+                avg = np.mean(last_50, axis=0)
+                if np.all(np.abs((last_50 - avg) / avg) < 0.05):
+                    return avg
+
+            if np.abs(local_max_x - x) <= threshold and np.abs(local_max_y - y) <= threshold:
+                return (local_max_x, local_max_y)
+
+            x, y = local_max_x, local_max_y
+
+            if self.snr < 1.0:
+                neighborhood_size *= 2
+
+    # Method to find peaks
+    def find_peaks(self, num_points=100, threshold=0.1, initial_neighborhood=3):
+        self.normalize_and_calculate_SNR()
+        points = self.generate_monte_carlo_points(num_points)
+        peak_points = []
+        for point in points:
+            peak_point = self.adaptive_gradient_ascent(point, threshold, initial_neighborhood)
+            if peak_point:
+                peak_points.append(peak_point)
+        peak_points = self.group_and_find_median(peak_points)
+        self.visualize_peaks(peak_points)
+
+    # Method to group similar points and find the median
+    def group_and_find_median(self, peak_points, distance_threshold=0.03):
+        peak_points = np.array(peak_points)
+        grouped_peaks = defaultdict(list)
+        visited = set()
+
+        for i, point1 in enumerate(peak_points):
+            if i in visited:
+                continue
+            group = [point1]
+            visited.add(i)
+
+            for j, point2 in enumerate(peak_points[i+1:], start=i+1):
+                dist = np.linalg.norm(point1 - point2)
+                if dist < distance_threshold:
+                    group.append(point2)
+                    visited.add(j)
+
+            median_point = np.median(np.array(group), axis=0)
+            grouped_peaks[tuple(median_point)] = len(group)
+
+        return grouped_peaks
+
+    # Method to visualize peaks
+    def visualize_peaks(self, peak_points, point_size_factor=20, coords: dict = None):
+        img = self.reciptiff_xr.values
+        plt.close('all')
+        vmin = np.nanpercentile(img, 10)
+        vmax = np.nanpercentile(img, 99)
+        plt.imshow(np.flipud(img), 
+                cmap='jet', 
+                vmin=vmin, 
+                vmax=vmax, 
+                extent=[coords['x_min'], 
+                        coords['x_max'], 
+                        coords['y_min'], 
+                        coords['y_max']])
+        for point, count in peak_points.items():
+            plt.scatter(point[1], point[0], s=count * point_size_factor, c='white')
+        plt.title('Peaks Visualized')
+        plt.xlabel('qxy')
+        plt.ylabel('qz')
+        plt.colorbar()
+        plt.show()
+
+'''
+# -- Alternative Image Processing: Filtering/Smoothing, Peak Searching, Indexing
     def filter_and_smooth(self, sigma=1):
         # Applying Gaussian smoothing to the corrected TIFF
         self.corrected_tiff = gaussian_filter(self.corrected_tiff, sigma=sigma)
 
+# -- Alternative 2D Peak Finder
     def detect_2D_peaks(self, threshold=0.5):
         # Finding peaks in image intensity
         peaks = find_peaks(self.corrected_tiff, threshold)
@@ -276,6 +651,70 @@ class WAXSAnalyze:
 
         # Getting coordinates with respect to the image
         self.peak_positions_coords = [self.pixel_to_coords(pixel) for pixel in self.peak_positions_pixel]
+
+    def interpolate_masked_image(img, mask, q_z_center, q_r_tolerance=5, num_points=40, method='linear'):
+            """
+            Interpolate masked regions in an image considering a polar coordinate framework (qr, chi).
+            
+            Parameters:
+                img (np.ndarray): Input image with masked regions.
+                mask (np.ndarray): Boolean mask indicating the masked regions in the image.
+                q_z_center (tuple): The (x, y) coordinate of the origin (0, 0) in Cartesian coordinates.
+                q_r_tolerance (float): Tolerance for considering pixels as similar in q_r value.
+                num_points (int): Number of points to consider when fitting Gaussian across the q_z axis.
+                method (str): Interpolation method ('linear', 'cubic', etc.).
+                
+            Returns:
+                np.ndarray: Interpolated image.
+            """
+            
+            # Get indices of non-masked and masked pixels
+            non_masked_indices = np.column_stack(np.where(mask))
+            masked_indices = np.column_stack(np.where(~mask))
+            
+            # Translate indices to Cartesian coordinates centered at q_z_center
+            non_masked_coords = non_masked_indices - np.array(q_z_center)
+            masked_coords = masked_indices - np.array(q_z_center)
+            
+            # Compute q_r values for non-masked and masked coordinates
+            q_r_non_masked = np.linalg.norm(non_masked_coords, axis=1)
+            q_r_masked = np.linalg.norm(masked_coords, axis=1)
+            
+            # Initialize interpolated image
+            interpolated_img = img.copy()
+            
+            # Interpolate masked pixels
+            for i, (x, y) in enumerate(masked_indices):
+                q_r_value = q_r_masked[i]
+                
+                # Find non-masked pixels within the q_r tolerance
+                within_tolerance = np.abs(q_r_non_masked - q_r_value) <= q_r_tolerance
+                if np.sum(within_tolerance) == 0:
+                    continue  # No points within tolerance to interpolate
+                
+                # Interpolate pixel value
+                points_to_use = non_masked_indices[within_tolerance]
+                values_to_use = img[points_to_use[:, 0], points_to_use[:, 1]]
+                interpolated_value = griddata(points_to_use, values_to_use, (x, y), method=method)
+                interpolated_img[x, y] = interpolated_value
+            
+            # Fit a Gaussian profile across the q_z axis (chi = 0)
+            q_z_x, q_z_y = q_z_center
+            x_indices = np.arange(q_z_x - num_points, q_z_x + num_points + 1)
+            y_indices = np.full_like(x_indices, q_z_y)
+            gaussian_points = img[x_indices, y_indices]
+            
+            # Fit Gaussian and interpolate across q_z axis
+            # Here, you would fit a Gaussian model to gaussian_points and populate the q_z axis
+            # For demonstration, the mean value is used
+            interpolated_img[q_z_x - num_points:q_z_x + num_points + 1, q_z_y] = np.mean(gaussian_points)
+            
+            return interpolated_img
+
+'''
+
+# This will normalize the image, calculate SNR, generate random points,
+# perform adaptive gradient ascent to find peaks, group them, and visualize them.
 
     # Normalize Intensity
     # Filter (Gaussian Noise)
@@ -301,7 +740,189 @@ class WAXSAnalyze:
         # Best match for position, simulate intensities and smearing from initial guesses.
             # diffraction .py
     # 
+
+
 '''
+# -- Image Smoothing Algorithm
+    def smooth_image(self, img, method: str = 'gaussian', sigma: float = 1.0, **kwargs) -> xr.DataArray:
+        """
+        Smooth the input image using the specified method.
+
+        Parameters:
+            img (xarray.DataArray or np.ndarray): Input image to be smoothed.
+            method (str): The smoothing method to use ('gaussian', 'bilateral', 'total_variation', 'anisotropic').
+            sigma (float): Sigma value for Gaussian smoothing. Default is 1.0.
+            **kwargs: Additional parameters for the smoothing method.
+
+        Returns:
+            xarray.DataArray: Smoothed image.
+        """
+        
+        # Check if input is xarray DataArray, and keep track
+        is_xarray = False
+        if isinstance(img, xr.DataArray):
+            is_xarray = True
+            original_coords = img.coords
+            original_attrs = img.attrs
+            img = img.values
+        else:
+            if not isinstance(img, np.ndarray):
+                raise ValueError("Input must be either an xarray DataArray or a numpy array.")
+
+        original_dtype = img.dtype
+
+        # Perform smoothing
+        if method == 'gaussian':
+            smoothed = gaussian_filter(img, sigma)
+        elif method == 'bilateral':
+            sigma_color = kwargs.get('sigma_color', 0.1)
+            sigma_spatial = kwargs.get('sigma_spatial', 15)
+            smoothed = denoise_bilateral(img, sigma_color=sigma_color, sigma_spatial=sigma_spatial, multichannel=False)
+        elif method == 'total_variation':
+            weight = kwargs.get('weight', 0.1)
+            smoothed = denoise_tv_chambolle(img, weight=weight)
+        elif method == 'anisotropic':
+            # Placeholder for anisotropic diffusion method (needs to be implemented)
+            smoothed = img.copy()
+        else:
+            raise ValueError("Invalid method. Choose from 'gaussian', 'bilateral', 'total_variation', 'anisotropic'.")
+
+        # Convert the smoothed image back to xarray DataArray if original input was xarray
+        if is_xarray:
+            smoothed = xr.DataArray(smoothed, coords=original_coords, attrs=original_attrs)
+
+        self.smoothed_img = smoothed
+
+        return self.smoothed_img
+
+#     def smooth_image(self, img: np.ndarray, method: str = 'gaussian', **kwargs) -> np.ndarray:
+#         """
+#         Smooth the input image using the specified method.
+        
+#         Parameters:
+#             img (np.ndarray): Input image to be smoothed.
+#             method (str): The smoothing method to use ('gaussian', 'bilateral', 'total_variation', 'anisotropic').
+#             **kwargs: Additional parameters for the smoothing method.
+            
+#         Returns:
+#             np.ndarray: Smoothed image with the same data type and shape as the input.
+#         """
+#         original_dtype = img.dtype
+        
+#         if method == 'gaussian':
+#             sigma = kwargs.get('sigma', 1)
+#             smoothed = gaussian_filter(img, sigma)
+#         elif method == 'bilateral':
+#             print('This method is broken...') # note to fix.
+#             sigma_color = kwargs.get('sigma_color', 0.05)
+#             sigma_spatial = kwargs.get('sigma_spatial', 15)
+#             smoothed = denoise_bilateral(img, sigma_color=sigma_color, sigma_spatial=sigma_spatial, multichannel=False)
+#         elif method == 'total_variation':
+#             weight = kwargs.get('weight', 0.1)
+#             smoothed = denoise_tv_chambolle(img, weight=weight)
+#         elif method == 'anisotropic':
+#             # Placeholder for anisotropic diffusion method (needs to be implemented)
+#             smoothed = img.copy()
+#         else:
+#             raise ValueError("Invalid method. Choose from 'gaussian', 'bilateral', 'total_variation', 'anisotropic'.")
+        
+#         self.smoothed_img = smoothed.astype(original_dtype)
+
+#         # Convert the smoothed image back to the original data type
+#         # return smoothed.astype(original_dtype)
+#         return self.smoothed_img
+
+
+# -- Calculating Signal-to-Noise Ratio (Internal)
+    def calculate_SNR_for_class(self):
+        """
+        Calculate the Signal-to-Noise Ratio (SNR) for each xarray DataArray in the class.
+        The SNR is stored as an attribute for each DataArray.
+        """
+        for attr_name in ['rawtiff_xr', 'reciptiff_xr', 'cakedtiff_xr']:
+            xarray_obj = getattr(self, attr_name, None)
+            if xarray_obj is not None:
+                mean_val = np.mean(xarray_obj.values)
+                std_val = np.std(xarray_obj.values)
+                snr = mean_val / std_val if std_val != 0 else 0
+                xarray_obj.attrs['SNR'] = snr
+
+    def calculate_SNR(self, xarray_obj):
+        """
+        Calculate the Signal-to-Noise Ratio (SNR) for an external xarray DataArray or numpy array.
+        The SNR is stored as a temporary attribute 'snrtemp'.
+
+        Parameters:
+            xarray_obj (xarray.DataArray or np.ndarray): The DataArray or numpy array for which to calculate SNR.
+
+        Returns:
+            None
+        """
+        if not isinstance(xarray_obj, (xr.DataArray, np.ndarray)):
+            raise ValueError("Input must be either an xarray DataArray or a numpy array.")
+        
+        # If the input is a numpy array, convert it to xarray DataArray
+        if isinstance(xarray_obj, np.ndarray):
+            xarray_obj = xr.DataArray(xarray_obj)
+        
+        mean_val = np.mean(xarray_obj.values)
+        std_val = np.std(xarray_obj.values)
+        snr = mean_val / std_val if std_val != 0 else 0
+        xarray_obj.attrs['SNR_temp'] = snr
+        self.snrtemp = snr
+
+        return xarray_obj
+    '''
+
+'''
+# def calculate_SNR(self):
+    #     if not hasattr(self, 'normalized_img'):
+    #         raise AttributeError("'WAXSAnalyze' object has no attribute 'normalized_img'. Run 'normalize_image()' first.")
+    #     self.snr = np.mean(self.normalized_img) / np.std(self.normalized_img)
+
+# def normalize_image(self):
+    #     img = self.reciptiff_xr.values.copy()
+    #     max_val = np.max(img)
+        
+    #     if max_val <= 0:
+    #         raise ValueError("Image maximum intensity is zero or negative, cannot normalize.")
+        
+    #     self.normalized_img = img / max_val
+    #     # self.reciptiff_xr.values = self.normalized_img
+        
+    #     # return self.reciptiff_xr  # return the xarray DataArray
+    #     return self.normalized_img
+
+  # def display_image(self, img: np.ndarray, title: str = 'Image', cmap: str = 'jet', coords: dict = None):
+    #     """
+    #     Display the image using matplotlib.
+
+    #     Parameters:
+    #         img (np.ndarray): Image to be displayed.
+    #         title (str): Title of the plot.
+    #         cmap (str): Colormap to be used.
+    #         coords (dict): Coordinate system to be used for plotting.
+
+    #     Returns:
+    #         None
+    #     """
+    #     plt.close('all')
+    #     vmin = np.nanpercentile(img, 10)
+    #     vmax = np.nanpercentile(img, 99)
+    #     plt.imshow(np.flipud(img), 
+    #                cmap='jet', 
+    #                vmin=vmin, 
+    #                vmax=vmax, 
+    #                extent=[coords['x_min'], 
+    #                        coords['x_max'], 
+    #                        coords['y_min'], 
+    #                        coords['y_max']])
+    #     plt.title(title)
+    #     plt.xlabel('qxy')
+    #     plt.ylabel('qz')
+    #     plt.colorbar()
+    #     plt.show()
+
     def createSampleDictionary(self, root_folder):
         """
         Loads and creates a sample dictionary from a root folder path.
