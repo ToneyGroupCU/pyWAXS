@@ -1,4 +1,4 @@
-import os, pathlib, tifffile, pyFAI, pygix, json, zarr, random
+import os, pathlib, tifffile, pyFAI, pygix, json, zarr, random, inspect
 import xarray as xr
 import numpy as np
 from scipy.ndimage.filters import gaussian_filter
@@ -8,12 +8,19 @@ from scipy.spatial.distance import cdist
 from scipy.optimize import curve_fit
 from scipy.spatial import KDTree
 from scipy.interpolate import griddata
+from scipy.interpolate import interp1d
+from skimage import feature
+from sklearn.neighbors import KDTree
+from scipy.signal import convolve2d
 from PIL import Image
 from typing import Union, Tuple
 import matplotlib.pyplot as plt
 from tifffile import TiffWriter
 from skimage.restoration import denoise_bilateral, denoise_tv_chambolle
+from skimage.filters import sobel
+from skimage.feature import canny
 from collections import defaultdict
+from numpy.polynomial.polynomial import Polynomial
 
 
 # - Custom Imports
@@ -77,6 +84,7 @@ class WAXSAnalyze:
 
         # - Caked Image Corrections Data Allocation
         self.cakedtiff_xr = None # datatype: xarray DataArray, Caked Space Corrected TIFF (xarray)
+        self.cakedtiff_sinchi_xr = None # datatype: xarray DataArray, Caked Space w/ Sin Chi Correction TIFF (xarray)
 
         # - Initialize GIXSTransform() object
         self.GIXSTransformObj = self.detCorrObj() # Create Detector Object
@@ -87,12 +95,68 @@ class WAXSAnalyze:
         self.normalized_img = None # Store Normalized Image
         self.snrtemp = None # Temporary signal-to-noise ratio 
 
-        # self.caked_data_np, self.recip_data_np, self.qz_np, self.qxy_np, self.chi_np, self.qr_np = None, None, None, None, None, None # datatypes: numpy arrays
-        # self.peak_positions_pixel = None
-        # self.peak_positions_coords = None
-        # self.apply_detector_corrections()
+## --- DATA LOADING & METADATA EXTRACTION --- ##
+    # -- Image Loading
+    def loadSingleImage(self, tiffPath: Union[str, pathlib.Path, np.ndarray]):
+        """
+        Loads a single xarray DataArray from a filepath to a raw TIFF
+        """
 
-    # -- Imports/Exports the current class instantiation when called.
+        # - Check that the path exists before continuing.
+        if not pathlib.Path(tiffPath).is_file():
+            raise ValueError(f"File {tiffPath} does not exist.")
+
+        # - Open the image from the filepath
+        image = Image.open(tiffPath)
+
+        # - Create a numpy array from the image
+        self.rawtiff_numpy = np.array(image)
+
+        # Run the loadMetaData method to construct the attribute dictionary for the tiffPath.
+        self.attribute_dict = self.loadMetaData(tiffPath)
+
+        # - Convert the image numpy array into an xarray DataArray object.
+        self.rawtiff_xr = xr.DataArray(data=self.rawtiff_numpy,
+                                             dims=['pix_y', 'pix_x'],
+                                             attrs=self.attribute_dict)
+        
+        # - Map the pixel dimensions to the xarray.
+        self.rawtiff_xr = self.rawtiff_xr.assign_coords({
+            'pix_x': self.rawtiff_xr.pix_x.data,
+            'pix_y': self.rawtiff_xr.pix_y.data
+        })
+
+    # -- Metadata Loading
+    def loadMetaData(self, tiffPath, delim='_'):
+        """
+        Description: Uses metadata_keylist to generate attribute dictionary of metadata based on filename.
+        Handle Variables
+            tiffPath : string
+                Filepath passed to the loadMetaData method that is used to extract metadata relevant to the TIFF image.
+            delim : string
+                String used as a delimiter in the filename. Defaults to an underscore '_' if no other delimiter is passed.
+        
+        Method Variables
+            attribute_dict : dictionary
+                Attributes ictionary of metadata attributes created using the filename and metadata list passed during initialization.
+            metadata_list : list
+                Metadata list - list of metadata keys used to segment the filename into a dictionary corresponding to said keys.
+        """
+
+        self.attribute_dict = {} # Initialize the dictionary.
+        filename = pathlib.Path(tiffPath).stem # strip the filename from the tiffPath
+        metadata_list = filename.split(delim) # splits the filename based on the delimter passed to the loadMetaData method.
+
+        # - Error handling in case the input list of metadata attributes does not match the length of the recovered metadata from the delimiter.
+        if len(metadata_list) != len(self.metadata_keylist):
+            raise ValueError("Filename metadata items do not match with metadata keylist.")
+        
+        for i, metadata_item in enumerate(self.metadata_keylist):
+            self.attribute_dict[metadata_item] = metadata_list[i]
+        return self.attribute_dict
+
+## --- PROJECT EXPORTING & IMPORTING --- ##
+    # -- Exports the current class instantiation when called.
     def exportzarr(self, zarrPath: Union[str, pathlib.Path], projectName: str):
         # Create the project directory
         project_path = pathlib.Path(zarrPath) / projectName
@@ -127,6 +191,7 @@ class WAXSAnalyze:
         with open(json_path, 'w') as file:
             json.dump(attributes_to_save, file)
 
+    # -- Imports the current class instantiation when called.
     def loadzarr(self, zarrPath: Union[str, pathlib.Path], projectName: str):
         # Define the project directory
         project_path = pathlib.Path(zarrPath) / projectName
@@ -153,66 +218,8 @@ class WAXSAnalyze:
         self.GIXSTransformObj = self.detCorrObj()
         self.loadSingleImage(self.tiffPath)
 
-# -- Image Loading
-    def loadSingleImage(self, tiffPath: Union[str, pathlib.Path, np.ndarray]):
-        """
-        Loads a single xarray DataArray from a filepath to a raw TIFF
-        """
-
-        # - Check that the path exists before continuing.
-        if not pathlib.Path(tiffPath).is_file():
-            raise ValueError(f"File {tiffPath} does not exist.")
-
-        # - Open the image from the filepath
-        image = Image.open(tiffPath)
-
-        # - Create a numpy array from the image
-        self.rawtiff_numpy = np.array(image)
-
-        # Run the loadMetaData method to construct the attribute dictionary for the tiffPath.
-        self.attribute_dict = self.loadMetaData(tiffPath)
-
-        # - Convert the image numpy array into an xarray DataArray object.
-        self.rawtiff_xr = xr.DataArray(data=self.rawtiff_numpy,
-                                             dims=['pix_y', 'pix_x'],
-                                             attrs=self.attribute_dict)
-        
-        # - Map the pixel dimensions to the xarray.
-        self.rawtiff_xr = self.rawtiff_xr.assign_coords({
-            'pix_x': self.rawtiff_xr.pix_x.data,
-            'pix_y': self.rawtiff_xr.pix_y.data
-        })
-
-# -- Metadata Loading
-    def loadMetaData(self, tiffPath, delim='_'):
-        """
-        Description: Uses metadata_keylist to generate attribute dictionary of metadata based on filename.
-        Handle Variables
-            tiffPath : string
-                Filepath passed to the loadMetaData method that is used to extract metadata relevant to the TIFF image.
-            delim : string
-                String used as a delimiter in the filename. Defaults to an underscore '_' if no other delimiter is passed.
-        
-        Method Variables
-            attribute_dict : dictionary
-                Attributes ictionary of metadata attributes created using the filename and metadata list passed during initialization.
-            metadata_list : list
-                Metadata list - list of metadata keys used to segment the filename into a dictionary corresponding to said keys.
-        """
-
-        self.attribute_dict = {} # Initialize the dictionary.
-        filename = pathlib.Path(tiffPath).stem # strip the filename from the tiffPath
-        metadata_list = filename.split(delim) # splits the filename based on the delimter passed to the loadMetaData method.
-
-        # - Error handling in case the input list of metadata attributes does not match the length of the recovered metadata from the delimiter.
-        if len(metadata_list) != len(self.metadata_keylist):
-            raise ValueError("Filename metadata items do not match with metadata keylist.")
-        
-        for i, metadata_item in enumerate(self.metadata_keylist):
-            self.attribute_dict[metadata_item] = metadata_list[i]
-        return self.attribute_dict
-
-# -- Apply Image Corrections
+## --- RAW IMAGE CORRECTIONS --- ##
+    # -- Apply Image Corrections
     def detCorrObj(self):
         """
         Creates a detector corrections object from the GIXSTransform class.
@@ -225,7 +232,7 @@ class WAXSAnalyze:
                                          energy = self.energy) # Additional parameters if needed, such as pixel splitting method or corrections (solid angle)
         return GIXSTransformObj
 
-# -- Generate the caked and reciprocal space corrected datasets.
+    # -- Generate the caked and reciprocal space corrected datasets.
     def apply_image_corrections(self):
         """
         Utilizes the GIXSTransform object to create image corrections.
@@ -247,7 +254,7 @@ class WAXSAnalyze:
         # Calculate the Signal-to-Noise Ratio for each xarray in the class
         self.calculate_SNR_for_class()
 
-# -- Conversion to numpy to store in the object instance in case we need these.
+    # -- Conversion to numpy to store in the object instance in case we need these.
     def convert_to_numpy(self):
         recip_da = self.reciptiff_xr
         caked_da = self.cakedtiff_xr
@@ -259,7 +266,8 @@ class WAXSAnalyze:
         self.chi_np = caked_da['chi'].data
         self.qr_np = caked_da['qr'].data
 
-# -- Display the RAW TIFF using XArray
+## --- IMAGE PLOTTING --- ##
+    # -- Display the RAW TIFF using XArray
     def rawdisplay_xr(self):
         plt.close('all')
         self.rawtiff_xr.plot.imshow(interpolation='antialiased', cmap='jet',
@@ -268,7 +276,7 @@ class WAXSAnalyze:
         plt.title('Raw TIFF Image')
         plt.show()
 
-# -- Display the Reciprocal Space Map using XArray
+    # -- Display the Reciprocal Space Map using XArray
     def recipdisplay_xr(self):
         plt.close('all')
         self.reciptiff_xr.plot.imshow(interpolation='antialiased', cmap='jet',
@@ -277,7 +285,7 @@ class WAXSAnalyze:
         plt.title('Missing Wedge Correction')
         plt.show()
 
-# -- Display the Caked Image using XArray
+    # -- Display the Caked Image using XArray
     def cakeddisplay_xr(self):
         plt.close('all')
         self.cakedtiff_xr.plot.imshow(interpolation='antialiased', cmap='jet',
@@ -286,62 +294,144 @@ class WAXSAnalyze:
         plt.title('Caked Image')
         plt.show()
 
- # -- Display Image
+    # -- Display Image (General)
     def display_image(self, img, title='Image', cmap='jet'):
         plt.close('all')
-        
+
         # Check for invalid or incompatible types
         if img is None or not isinstance(img, (np.ndarray, xr.DataArray)):
             raise ValueError("The input image is None or not of a compatible type.")
-        
-        # Check for xarray DataArray and convert to numpy array if needed
-        if isinstance(img, xr.DataArray):
-            img = img.values
-            
-        # Check for empty or all NaN array
-        if np.all(np.isnan(img)) or img.size == 0:
-            raise ValueError("The input image is empty or contains only NaN values.")
-                
-        vmin = np.nanpercentile(img, 10)
-        vmax = np.nanpercentile(img, 99)
 
-        if self.coords is not None:
-            plt.imshow(np.flipud(img), cmap=cmap, vmin=vmin, vmax=vmax, 
-                    extent=[self.coords['x_min'], 
-                            self.coords['x_max'], 
-                            self.coords['y_min'], 
-                            self.coords['y_max']])
+        # Initialize extent
+        extent = None
+
+        # Check for xarray DataArray
+        if isinstance(img, xr.DataArray):
+            img_values = img.values
+
+            # Extract extent and axis labels from xarray coordinates if available
+            coords_names = list(img.coords.keys())
+            if len(coords_names) == 2:
+                extent = [
+                    img.coords[coords_names[1]].min(),
+                    img.coords[coords_names[1]].max(),
+                    img.coords[coords_names[0]].min(),
+                    img.coords[coords_names[0]].max()
+                ]
+                ylabel, xlabel = coords_names
         else:
-            plt.imshow(np.flipud(img), 
-                    cmap=cmap, 
-                    vmin=vmin, 
-                    vmax=vmax)
+            img_values = img
+
+            # Use self.coords if available
+            if self.coords is not None:
+                extent = [
+                    self.coords['x_min'],
+                    self.coords['x_max'],
+                    self.coords['y_min'],
+                    self.coords['y_max']
+                ]
+                xlabel, ylabel = 'qxy', 'qz'
+
+        # Check for empty or all NaN array
+        if np.all(np.isnan(img_values)) or img_values.size == 0:
+            raise ValueError("The input image is empty or contains only NaN values.")
+
+        vmin = np.nanpercentile(img_values, 10)
+        vmax = np.nanpercentile(img_values, 99)
+
+        plt.imshow(np.flipud(img_values),
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                extent=extent,
+                aspect='auto')  # Ensure the aspect ratio is set automatically
 
         plt.title(title)
-        plt.xlabel('qxy')
-        plt.ylabel('qz')
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
         plt.colorbar()
         plt.show()
 
-# -- Normalize Image
-    def normalize_image(self, normalizerecip = False):
-        if self.reciptiff_xr is None:
-            raise ValueError("Reciprocal space image data is not available.")
-            
-        img = self.reciptiff_xr.values
-        max_val = np.max(img)
+## --- IMAGE CORRECTION - SIN(CHI) --- ##
+    def sinchi_corr(self, chicorr=True, qsqr=False):
+
+        if not chicorr and qsqr:
+            raise ValueError('chicorr must be enabled for qsqr correction to be applied. This will be updated in the future.')
+        
+        # Initialize original attributes
+        original_attrs = self.cakedtiff_xr.attrs.copy()
+
+        # Apply sin(chi) correction if chicorr is True
+        if chicorr:
+            sinchi_mask = np.sin(np.radians(np.abs(self.cakedtiff_xr.chi)))
+            self.cakedtiff_sinchi_xr = self.cakedtiff_xr * sinchi_mask
+            self.cakedtiff_sinchi_xr.attrs.update(original_attrs)
+            self.cakedtiff_sinchi_xr.attrs['sinchi'] = True
+            self.cakedtiff_sinchi_xr.attrs['qsqr'] = False
+
+            # Apply qr^2 scaling if qsqr is True
+            if qsqr:
+                self.cakedtiff_sinchi_xr *= self.cakedtiff_sinchi_xr.qr  # Assuming 'qr' is a data variable
+                self.cakedtiff_sinchi_xr.attrs['qsqr'] = True
+
+        return self.cakedtiff_sinchi_xr
+
+## --- IMAGE NORMALIZATION --- ##
+    # -- Normalize Image
+    def normalize_image(self, img=None, normalizerecip=False):
+        # Check for invalid or incompatible types
+        if img is None:
+            if self.reciptiff_xr is None:
+                raise ValueError("Reciprocal space image data is not available.")
+            img = self.reciptiff_xr
+
+        if not isinstance(img, (np.ndarray, xr.DataArray)):
+            raise ValueError("The input image is not of a compatible type.")
+
+        # Initialize original attributes
+        original_attrs = {}
+
+        # Handle xarray DataArray
+        if isinstance(img, xr.DataArray):
+            img_values = img.values
+            original_attrs = img.attrs.copy()
+            data_type = 'DataArray'
+        else:
+            img_values = img
+            data_type = 'numpy'
+
+        # Perform normalization
+        max_val = np.max(img_values)
         if max_val <= 0:
             raise ValueError("Image maximum intensity is zero or negative, cannot normalize.")
-        
-        self.normalized_img = img / max_val
 
-        if normalizerecip == True:
-            self.reciptiff_xr.values = self.normalized_img
+        normalized_img_values = img_values / max_val
+
+        # Find the coordinates of the maximum intensity pixel
+        max_coords = np.unravel_index(np.argmax(img_values), img_values.shape)
+        if isinstance(img, xr.DataArray):
+            max_y = img.coords[img.dims[0]][max_coords[0]].values
+            max_x = img.coords[img.dims[1]][max_coords[1]].values
+        else:
+            max_x, max_y = max_coords
+
+        # Create xarray DataArray and set attributes
+        normalized_img = xr.DataArray(normalized_img_values, coords=img.coords if isinstance(img, xr.DataArray) else None, dims=img.dims if isinstance(img, xr.DataArray) else None)
+        normalized_img.attrs.update(original_attrs)
+        normalized_img.attrs['original_name'] = inspect.currentframe().f_back.f_locals.get('img', 'unknown')
+        normalized_img.attrs['original_type'] = data_type
+
+        # Save to class attribute
+        self.normalized_img = normalized_img
+
+        if normalizerecip:
+            self.reciptiff_xr.values = normalized_img_values
             self.reciptiff_xr.attrs['normalized'] = True
-        
-        return self.normalized_img
 
-# -- Image Smoothing Algorithm
+        return normalized_img, (max_x, max_y)
+
+## --- IMAGE SMOOTHING --- ##
+    # -- Image Smoothing Algorithm
     def smooth_image(self, img, method: str = 'gaussian', **kwargs) -> xr.DataArray:
         """
         Smooth the input image using the specified method and exclude zero-intensity regions.
@@ -388,52 +478,8 @@ class WAXSAnalyze:
         
         return self.smoothed_img
 
-    '''
-# -- Image Smoothing Algorithm
-    def smooth_image(self, img, method: str = 'gaussian', **kwargs) -> xr.DataArray:
-        """
-        Smooth the input image using the specified method and exclude zero-intensity regions.
-        
-        Parameters:
-            img (xr.DataArray or np.ndarray): Input image to be smoothed.
-            method (str): The smoothing method to use ('gaussian', 'bilateral', 'total_variation', 'anisotropic').
-            **kwargs: Additional parameters for the smoothing method.
-            
-        Returns:
-            xr.DataArray: Smoothed image with the same shape as the input.
-        """
-        
-        # Convert to xarray if input is a numpy array
-        if isinstance(img, np.ndarray):
-            img = xr.DataArray(img)
-            
-        # Create a mask to exclude zero-intensity regions
-        mask = img != 0
-        
-        # Backup original dtype
-        original_dtype = img.dtype
-        
-        if method == 'gaussian':
-            sigma = kwargs.get('sigma', 1)
-            smoothed = gaussian_filter(img.where(mask), sigma)
-        elif method == 'bilateral':
-            sigma_color = kwargs.get('sigma_color', 0.05)
-            sigma_spatial = kwargs.get('sigma_spatial', 15)
-            smoothed = denoise_bilateral(img.where(mask).values, sigma_color=sigma_color, sigma_spatial=sigma_spatial, multichannel=False)
-        elif method == 'total_variation':
-            weight = kwargs.get('weight', 0.1)
-            smoothed = denoise_tv_chambolle(img.where(mask).values, weight=weight)
-        elif method == 'anisotropic':
-            smoothed = img.where(mask).copy()
-        else:
-            raise ValueError("Invalid method. Choose from 'gaussian', 'bilateral', 'total_variation', 'anisotropic'.")
-        
-        smoothed = xr.DataArray(smoothed, coords=img.coords, dims=img.dims)
-        self.smoothed_img = smoothed.astype(original_dtype)
-        return self.smoothed_img
-    '''
-
-# -- Calculating Signal-to-Noise Ratio (Internal)
+## --- CALCULATE SIGNAL-to-NOISE  --- ##
+    # -- Calculating Signal-to-Noise Ratio (Internal)
     def calculate_SNR_for_class(self):
         """
         Calculate the Signal-to-Noise Ratio (SNR) for all xarray DataArrays stored as class attributes.
@@ -447,6 +493,7 @@ class WAXSAnalyze:
                 std_val = np.std(xarray_obj.where(mask).values)
                 xarray_obj.attrs['snr'] = mean_val / std_val
 
+    # -- Calculating Signal-to-Noise Ratio (External)
     def calculate_SNR(self, xarray_obj: xr.DataArray) -> float:
         """
         Calculate the Signal-to-Noise Ratio (SNR) for an input xarray DataArray.
@@ -468,69 +515,166 @@ class WAXSAnalyze:
         self.snrtemp = snr
         return xarray_obj
 
-    def cartesian_to_polar(q_xy, q_z):
+## --- IMAGE INTERPOLATION  --- ##
+    def brute_force_interpolate(self, img: xr.DataArray, gap_threshold: int = 5) -> xr.DataArray:
         """
-        Convert Cartesian coordinates (q_xy, q_z) to polar coordinates (q_r, chi).
+        Brute-force interpolation method to fill gaps in an image.
         
         Parameters:
-            q_xy (np.ndarray): Array of in-plane momentum transfer values.
-            q_z (np.ndarray): Array of out-of-plane momentum transfer values.
-            
+            img (xr.DataArray): Input image data
+            gap_threshold (int): Maximum size of gaps to interpolate
+        
         Returns:
-            q_r (np.ndarray): Array of radial distance values.
-            chi (np.ndarray): Array of angle values in degrees.
+            xr.DataArray: Interpolated image
         """
-        q_r = np.sqrt(q_xy ** 2 + q_z ** 2)
-        chi = np.degrees(np.arctan2(q_xy, q_z))
-        return q_r, chi
+        interpolated_img = img.copy()
+        
+        rows, cols = img.shape
+        
+        for col in range(cols):
+            gap_start = None
+            for row in range(rows):
+                if img[row, col] != 0 and gap_start is not None:
+                    gap_end = row
+                    
+                    # Check if the gap size is within the threshold
+                    if gap_end - gap_start <= gap_threshold:
+                        # Interpolate
+                        interpolated_img[gap_start:gap_end, col] = np.interp(
+                            np.arange(gap_start, gap_end),
+                            [gap_start - 1, gap_end],
+                            [img[gap_start - 1, col], img[gap_end, col]]
+                        )
+                    
+                    gap_start = None
+                elif img[row, col] == 0 and gap_start is None:
+                    gap_start = row
+                    
+        return interpolated_img
 
-    def interpolate_image(self, img: xr.DataArray, pixel_tolerance: float = 0.1) -> xr.DataArray:
-        # Step 1: Conversion to Polar Coordinates
-        q_xy, q_z = np.meshgrid(img.coords['q_xy'], img.coords['q_z'])
-        q_r = np.sqrt(q_xy**2 + q_z**2)
-        chi = np.arctan2(q_xy, q_z)
-        
-        # Step 2: Masking
-        mask = img != 0
-        
-        # Create KDTree for efficient spatial search
-        coords = np.column_stack((q_r[mask], chi[mask]))
-        tree = KDTree(coords)
-        
-        # Step 3: Interpolation along q_r
-        zero_pixels = np.column_stack((q_r[~mask], chi[~mask]))
-        interpolated_values = np.zeros(zero_pixels.shape[0])
-        
-        for i, (q, c) in enumerate(zero_pixels):
-            # Find pixels within the pixel_tolerance in q_r
-            idx = tree.query_ball_point([q, c], pixel_tolerance)
-            if len(idx) == 0:
-                continue  # Skip if no neighbors found
-            neighbors = coords[idx]
-            values = img.values[(neighbors[:, 0], neighbors[:, 1])]
-            interpolated_values[i] = np.mean(values)
-            
-        # Step 4: Special Interpolation at q_z = 0
-        qz_zero_pixels = zero_pixels[np.isclose(zero_pixels[:, 1], 0, atol=1e-6)]
-        for q in qz_zero_pixels[:, 0]:
-            # Gather 40 pixels on either side
-            idx = tree.query_ball_point([q, 0], pixel_tolerance, count_only=40)
-            neighbors = coords[idx]
-            values = img.values[(neighbors[:, 0], neighbors[:, 1])]
-            
-            # Fit Gaussian
-            popt, _ = curve_fit(self.gaussian, neighbors[:, 0], values)
-            interpolated_values[qz_zero_pixels[:, 0] == q] = self.gaussian(q, *popt)
-            
-        # Step 5: Apply Interpolation
-        img.values[~mask] = interpolated_values
-        
-        return img
-    
-    # Gaussian function for curve fitting
-    def gaussian(self, x, a, b, c):
+    @staticmethod
+    def gaussian(x, a, b, c):
         return a * np.exp(-((x - b)**2) / (2 * c**2))
 
+    def edge_detection(self, img, method='sobel'):
+        if method == 'sobel':
+            edge_img = sobel(img.values)
+        elif method == 'canny':
+            edge_img = canny(img.values)
+        else:
+            raise ValueError("Invalid edge detection method.")
+        
+        # Define a kernel to check for adjacent zero-valued pixels
+        kernel = np.array([[1, 1, 1],
+                        [1, 0, 1],
+                        [1, 1, 1]])
+        
+        # Convolve the edge image with the kernel
+        zero_adjacency = convolve2d(edge_img, kernel, mode='same')
+        
+        # Filter out edge pixels that are not adjacent to zero-valued pixels
+        filtered_edge_img = edge_img * (zero_adjacency > 0)
+        
+        return filtered_edge_img
+
+    def classify_gaps(self, edge_img, tolerance = 5, padding = 5):
+        # Initialize gap information
+        gaps = {'horizontal': [], 'vertical': [], 'missing_wedge': []}
+        n_rows, n_cols = edge_img.shape
+        
+        # Loop through rows and columns to identify gaps
+        for i, row in enumerate(edge_img):
+            gap_start = None
+            for j, pixel in enumerate(row):
+                if pixel == 0 and gap_start is None:
+                    gap_start = j
+                elif pixel != 0 and gap_start is not None:
+                    gaps['horizontal'].append((i, gap_start, j))
+                    gap_start = None
+
+        for i, col in enumerate(edge_img.T):
+            gap_start = None
+            for j, pixel in enumerate(col):
+                if pixel == 0 and gap_start is None:
+                    gap_start = j
+                elif pixel != 0 and gap_start is not None:
+                    gaps['vertical'].append((i, gap_start, j))
+                    gap_start = None
+        
+        # Identify potential missing wedges (gaps centered at q_z = 0)
+        center = edge_img.shape[0] // 2
+        # tolerance = 5  # Adjust as needed
+        for i, start, end in gaps['horizontal']:
+            if abs(i - center) < tolerance:
+                gaps['missing_wedge'].append((i, start, end))
+
+        # Curvature checking logic
+        for direction, gap_list in gaps.items():
+            new_gap_list = []
+            for gap in gap_list:
+                # padding = 5  # Default padding for curvature check
+                
+                if direction == 'horizontal':
+                    start = max(gap[1] - padding, 0)
+                    end = min(gap[2] + padding, n_cols)
+                    surrounding_pixels = edge_img[gap[0], start:end]
+                else:
+                    start = max(gap[1] - padding, 0)
+                    end = min(gap[2] + padding, n_rows)
+                    surrounding_pixels = edge_img[start:end, gap[0]]
+
+                p = Polynomial.fit(np.arange(len(surrounding_pixels)), surrounding_pixels, 2)
+                
+                # Check curvature. You may adjust the tolerance.
+                if len(p.convert().coef) > 2 and abs(p.convert().coef[2]) > 1e-5:
+                    new_gap_list.append(gap)
+
+            gaps[direction] = new_gap_list
+
+        return gaps
+
+    def interpolate_gaps(self, img, gaps, threshold=0.1):
+        interpolated_img = img.copy()
+
+        # Horizontal interpolation
+        for i, start, end in gaps['horizontal']:
+            if end - start < img.shape[1] * threshold:
+                interpolated_img[i, start:end] = np.interp(
+                    np.arange(start, end),
+                    [start - 1, end],
+                    [img[i, start - 1], img[i, end]]
+                )
+
+        # Vertical interpolation
+        for i, start, end in gaps['vertical']:
+            interpolated_img[start:end, i] = np.interp(
+                np.arange(start, end),
+                [start - 1, end],
+                [img[start - 1, i], img[end, i]]
+            )
+
+        # Missing wedge interpolation logic
+        # Identify potential missing wedges (gaps centered at q_z = 0)
+        potential_wedges = [gap for gap in gaps['horizontal'] if abs(gap[0] - img.shape[0] // 2) < 5]
+
+        for i, start, end in potential_wedges:
+            # Check if the gap size is below the threshold
+            if end - start < img.shape[1] * threshold:
+                # Interpolate across the gap along q_z at q_xy = 0
+                interpolated_img[i, start:end] = np.interp(
+                    np.arange(start, end),
+                    [start - 1, end],
+                    [img[i, start - 1], img[i, end]]
+                )
+
+        return interpolated_img
+
+    def handle_interpolation(self, img, edge_method='Sobel', threshold=0.1):
+        edge_img = self.edge_detection(img, method=edge_method)
+        gaps = self.classify_gaps(edge_img)
+        return self.interpolate_gaps(img, gaps, threshold)
+
+## --- PEAK SEARCHING --- ##
     # Method for generating Monte Carlo points
     def generate_monte_carlo_points(self, num_points=100):
         img = self.reciptiff_xr.values
@@ -638,11 +782,6 @@ class WAXSAnalyze:
         plt.show()
 
 '''
-# -- Alternative Image Processing: Filtering/Smoothing, Peak Searching, Indexing
-    def filter_and_smooth(self, sigma=1):
-        # Applying Gaussian smoothing to the corrected TIFF
-        self.corrected_tiff = gaussian_filter(self.corrected_tiff, sigma=sigma)
-
 # -- Alternative 2D Peak Finder
     def detect_2D_peaks(self, threshold=0.5):
         # Finding peaks in image intensity
@@ -651,68 +790,9 @@ class WAXSAnalyze:
 
         # Getting coordinates with respect to the image
         self.peak_positions_coords = [self.pixel_to_coords(pixel) for pixel in self.peak_positions_pixel]
-
-    def interpolate_masked_image(img, mask, q_z_center, q_r_tolerance=5, num_points=40, method='linear'):
-            """
-            Interpolate masked regions in an image considering a polar coordinate framework (qr, chi).
-            
-            Parameters:
-                img (np.ndarray): Input image with masked regions.
-                mask (np.ndarray): Boolean mask indicating the masked regions in the image.
-                q_z_center (tuple): The (x, y) coordinate of the origin (0, 0) in Cartesian coordinates.
-                q_r_tolerance (float): Tolerance for considering pixels as similar in q_r value.
-                num_points (int): Number of points to consider when fitting Gaussian across the q_z axis.
-                method (str): Interpolation method ('linear', 'cubic', etc.).
-                
-            Returns:
-                np.ndarray: Interpolated image.
-            """
-            
-            # Get indices of non-masked and masked pixels
-            non_masked_indices = np.column_stack(np.where(mask))
-            masked_indices = np.column_stack(np.where(~mask))
-            
-            # Translate indices to Cartesian coordinates centered at q_z_center
-            non_masked_coords = non_masked_indices - np.array(q_z_center)
-            masked_coords = masked_indices - np.array(q_z_center)
-            
-            # Compute q_r values for non-masked and masked coordinates
-            q_r_non_masked = np.linalg.norm(non_masked_coords, axis=1)
-            q_r_masked = np.linalg.norm(masked_coords, axis=1)
-            
-            # Initialize interpolated image
-            interpolated_img = img.copy()
-            
-            # Interpolate masked pixels
-            for i, (x, y) in enumerate(masked_indices):
-                q_r_value = q_r_masked[i]
-                
-                # Find non-masked pixels within the q_r tolerance
-                within_tolerance = np.abs(q_r_non_masked - q_r_value) <= q_r_tolerance
-                if np.sum(within_tolerance) == 0:
-                    continue  # No points within tolerance to interpolate
-                
-                # Interpolate pixel value
-                points_to_use = non_masked_indices[within_tolerance]
-                values_to_use = img[points_to_use[:, 0], points_to_use[:, 1]]
-                interpolated_value = griddata(points_to_use, values_to_use, (x, y), method=method)
-                interpolated_img[x, y] = interpolated_value
-            
-            # Fit a Gaussian profile across the q_z axis (chi = 0)
-            q_z_x, q_z_y = q_z_center
-            x_indices = np.arange(q_z_x - num_points, q_z_x + num_points + 1)
-            y_indices = np.full_like(x_indices, q_z_y)
-            gaussian_points = img[x_indices, y_indices]
-            
-            # Fit Gaussian and interpolate across q_z axis
-            # Here, you would fit a Gaussian model to gaussian_points and populate the q_z axis
-            # For demonstration, the mean value is used
-            interpolated_img[q_z_x - num_points:q_z_x + num_points + 1, q_z_y] = np.mean(gaussian_points)
-            
-            return interpolated_img
-
 '''
 
+## -- PSEUDOCODE LOGIC SEGMENT -- ##
 # This will normalize the image, calculate SNR, generate random points,
 # perform adaptive gradient ascent to find peaks, group them, and visualize them.
 
@@ -739,431 +819,3 @@ class WAXSAnalyze:
             # Comparator Bragg Peak Simulation (Compute Crystal)
         # Best match for position, simulate intensities and smearing from initial guesses.
             # diffraction .py
-    # 
-
-
-'''
-# -- Image Smoothing Algorithm
-    def smooth_image(self, img, method: str = 'gaussian', sigma: float = 1.0, **kwargs) -> xr.DataArray:
-        """
-        Smooth the input image using the specified method.
-
-        Parameters:
-            img (xarray.DataArray or np.ndarray): Input image to be smoothed.
-            method (str): The smoothing method to use ('gaussian', 'bilateral', 'total_variation', 'anisotropic').
-            sigma (float): Sigma value for Gaussian smoothing. Default is 1.0.
-            **kwargs: Additional parameters for the smoothing method.
-
-        Returns:
-            xarray.DataArray: Smoothed image.
-        """
-        
-        # Check if input is xarray DataArray, and keep track
-        is_xarray = False
-        if isinstance(img, xr.DataArray):
-            is_xarray = True
-            original_coords = img.coords
-            original_attrs = img.attrs
-            img = img.values
-        else:
-            if not isinstance(img, np.ndarray):
-                raise ValueError("Input must be either an xarray DataArray or a numpy array.")
-
-        original_dtype = img.dtype
-
-        # Perform smoothing
-        if method == 'gaussian':
-            smoothed = gaussian_filter(img, sigma)
-        elif method == 'bilateral':
-            sigma_color = kwargs.get('sigma_color', 0.1)
-            sigma_spatial = kwargs.get('sigma_spatial', 15)
-            smoothed = denoise_bilateral(img, sigma_color=sigma_color, sigma_spatial=sigma_spatial, multichannel=False)
-        elif method == 'total_variation':
-            weight = kwargs.get('weight', 0.1)
-            smoothed = denoise_tv_chambolle(img, weight=weight)
-        elif method == 'anisotropic':
-            # Placeholder for anisotropic diffusion method (needs to be implemented)
-            smoothed = img.copy()
-        else:
-            raise ValueError("Invalid method. Choose from 'gaussian', 'bilateral', 'total_variation', 'anisotropic'.")
-
-        # Convert the smoothed image back to xarray DataArray if original input was xarray
-        if is_xarray:
-            smoothed = xr.DataArray(smoothed, coords=original_coords, attrs=original_attrs)
-
-        self.smoothed_img = smoothed
-
-        return self.smoothed_img
-
-#     def smooth_image(self, img: np.ndarray, method: str = 'gaussian', **kwargs) -> np.ndarray:
-#         """
-#         Smooth the input image using the specified method.
-        
-#         Parameters:
-#             img (np.ndarray): Input image to be smoothed.
-#             method (str): The smoothing method to use ('gaussian', 'bilateral', 'total_variation', 'anisotropic').
-#             **kwargs: Additional parameters for the smoothing method.
-            
-#         Returns:
-#             np.ndarray: Smoothed image with the same data type and shape as the input.
-#         """
-#         original_dtype = img.dtype
-        
-#         if method == 'gaussian':
-#             sigma = kwargs.get('sigma', 1)
-#             smoothed = gaussian_filter(img, sigma)
-#         elif method == 'bilateral':
-#             print('This method is broken...') # note to fix.
-#             sigma_color = kwargs.get('sigma_color', 0.05)
-#             sigma_spatial = kwargs.get('sigma_spatial', 15)
-#             smoothed = denoise_bilateral(img, sigma_color=sigma_color, sigma_spatial=sigma_spatial, multichannel=False)
-#         elif method == 'total_variation':
-#             weight = kwargs.get('weight', 0.1)
-#             smoothed = denoise_tv_chambolle(img, weight=weight)
-#         elif method == 'anisotropic':
-#             # Placeholder for anisotropic diffusion method (needs to be implemented)
-#             smoothed = img.copy()
-#         else:
-#             raise ValueError("Invalid method. Choose from 'gaussian', 'bilateral', 'total_variation', 'anisotropic'.")
-        
-#         self.smoothed_img = smoothed.astype(original_dtype)
-
-#         # Convert the smoothed image back to the original data type
-#         # return smoothed.astype(original_dtype)
-#         return self.smoothed_img
-
-
-# -- Calculating Signal-to-Noise Ratio (Internal)
-    def calculate_SNR_for_class(self):
-        """
-        Calculate the Signal-to-Noise Ratio (SNR) for each xarray DataArray in the class.
-        The SNR is stored as an attribute for each DataArray.
-        """
-        for attr_name in ['rawtiff_xr', 'reciptiff_xr', 'cakedtiff_xr']:
-            xarray_obj = getattr(self, attr_name, None)
-            if xarray_obj is not None:
-                mean_val = np.mean(xarray_obj.values)
-                std_val = np.std(xarray_obj.values)
-                snr = mean_val / std_val if std_val != 0 else 0
-                xarray_obj.attrs['SNR'] = snr
-
-    def calculate_SNR(self, xarray_obj):
-        """
-        Calculate the Signal-to-Noise Ratio (SNR) for an external xarray DataArray or numpy array.
-        The SNR is stored as a temporary attribute 'snrtemp'.
-
-        Parameters:
-            xarray_obj (xarray.DataArray or np.ndarray): The DataArray or numpy array for which to calculate SNR.
-
-        Returns:
-            None
-        """
-        if not isinstance(xarray_obj, (xr.DataArray, np.ndarray)):
-            raise ValueError("Input must be either an xarray DataArray or a numpy array.")
-        
-        # If the input is a numpy array, convert it to xarray DataArray
-        if isinstance(xarray_obj, np.ndarray):
-            xarray_obj = xr.DataArray(xarray_obj)
-        
-        mean_val = np.mean(xarray_obj.values)
-        std_val = np.std(xarray_obj.values)
-        snr = mean_val / std_val if std_val != 0 else 0
-        xarray_obj.attrs['SNR_temp'] = snr
-        self.snrtemp = snr
-
-        return xarray_obj
-    '''
-
-'''
-# def calculate_SNR(self):
-    #     if not hasattr(self, 'normalized_img'):
-    #         raise AttributeError("'WAXSAnalyze' object has no attribute 'normalized_img'. Run 'normalize_image()' first.")
-    #     self.snr = np.mean(self.normalized_img) / np.std(self.normalized_img)
-
-# def normalize_image(self):
-    #     img = self.reciptiff_xr.values.copy()
-    #     max_val = np.max(img)
-        
-    #     if max_val <= 0:
-    #         raise ValueError("Image maximum intensity is zero or negative, cannot normalize.")
-        
-    #     self.normalized_img = img / max_val
-    #     # self.reciptiff_xr.values = self.normalized_img
-        
-    #     # return self.reciptiff_xr  # return the xarray DataArray
-    #     return self.normalized_img
-
-  # def display_image(self, img: np.ndarray, title: str = 'Image', cmap: str = 'jet', coords: dict = None):
-    #     """
-    #     Display the image using matplotlib.
-
-    #     Parameters:
-    #         img (np.ndarray): Image to be displayed.
-    #         title (str): Title of the plot.
-    #         cmap (str): Colormap to be used.
-    #         coords (dict): Coordinate system to be used for plotting.
-
-    #     Returns:
-    #         None
-    #     """
-    #     plt.close('all')
-    #     vmin = np.nanpercentile(img, 10)
-    #     vmax = np.nanpercentile(img, 99)
-    #     plt.imshow(np.flipud(img), 
-    #                cmap='jet', 
-    #                vmin=vmin, 
-    #                vmax=vmax, 
-    #                extent=[coords['x_min'], 
-    #                        coords['x_max'], 
-    #                        coords['y_min'], 
-    #                        coords['y_max']])
-    #     plt.title(title)
-    #     plt.xlabel('qxy')
-    #     plt.ylabel('qz')
-    #     plt.colorbar()
-    #     plt.show()
-
-    def createSampleDictionary(self, root_folder):
-        """
-        Loads and creates a sample dictionary from a root folder path.
-        The dictionary will contain: sample name, scanID list, series scanID list, 
-        a pathlib object variable for each sample's data folder (which contains the /maxs/raw/ subfolders),
-        and time_start and exposure_time for each series of scans.
-        
-        The method uses alias mappings to identify important metadata from the filenames:
-        SCAN ID : Defines the scan ID number in the convention used at 11-BM (CMS), specific to a single shot exposure or time series.
-            aliases : scan_id: 'scanid', 'id', 'scannum', 'scan', 'scan_id', 'scan_ID'
-        SERIES NUMBER : Within a series (fixed SCAN ID), the exposure number in the series with respect to the starting TIME START (clocktime)
-            aliases : series_number: 'seriesnum', 'seriesid', 'series_id', 'series_ID', 'series', 'series_number', 'series_num'
-        TIME START : Also generically referred to as CLOCK TIME, logs the start of the exposure or series acquisition. This time is constant for all exposures within a series.
-            aliases : time_start: 'start_time', 'starttime', 'start', 'clocktime', 'clock', 'clockpos', 'clock_time', 'time', 'time_start'
-        EXPOSURE TIME : The duration of a single shot or exposure, either in a single image or within a series.
-            aliases : 'exptime', 'exp_time', 'exposuretime', 'etime', 'exp', 'expt', 'exposure_time'
-        """
-
-        # Ensure the root_folder is a pathlib.Path object
-        self.root_folder = pathlib.Path(root_folder)
-        if not self.root_folder.is_dir():
-            raise ValueError(f"Directory {self.root_folder} does not exist.")
-        
-        # Initialize the sample dictionary
-        sample_dict = {}
-        
-        # Alias mappings for scan_id, series_number, time_start, and exposure_time
-        scan_id_aliases = ['scanid', 'id', 'scannum', 'scan', 'scan_id', 'scan_ID']
-        series_number_aliases = ['seriesnum', 'seriesid', 'series_id', 'series_ID', 'series', 'series_number', 'series_num']
-        time_start_aliases = ['start_time', 'starttime', 'start', 'clocktime', 'clock', 'clockpos', 'clock_time', 'time', 'time_start']
-        exposure_time_aliases = ['exptime', 'exp_time', 'exposuretime', 'etime', 'exp', 'expt', 'exposure_time']
-
-        # Identify the indices of the required metadata in the naming scheme
-        for idx, alias in enumerate(self.md_naming_scheme):
-            if alias.lower() in [alias.lower() for alias in scan_id_aliases]:
-                self.scan_id_index = idx
-            if alias.lower() in [alias.lower() for alias in series_number_aliases]:
-                self.series_number_index = idx
-
-        if self.scan_id_index is None or self.series_number_index is None:
-            raise ValueError('md_naming_scheme does not contain keys for scan_id or series_number.')
-
-        # Update sample_dict with new information
-        for sample_folder in self.root_folder.iterdir():
-            if sample_folder.is_dir():
-                # Confirm that this is a sample folder by checking for /maxs/raw/ subfolder
-                maxs_raw_dir = sample_folder / 'maxs' / 'raw'
-                if maxs_raw_dir.is_dir():
-                    # Sample folder checks out, extract scan_id, series_number, time_start, and exposure_time
-                    sample_name = sample_folder.name
-                    scan_list = []
-                    series_list = {}  # Initialize series_list as an empty dictionary
-                    
-                    for image_file in maxs_raw_dir.glob('*'):
-                        # Load metadata from image
-                        metadata = self.loadMd(image_file)
-                        
-                        # Lowercase all metadata keys for case insensitivity
-                        metadata_lower = {k.lower(): v for k, v in metadata.items()}
-                        
-                        # Find and store scan_id, series_number, time_start, and exposure_time
-                        scan_id = metadata_lower.get(self.md_naming_scheme[self.scan_id_index].lower())
-                        series_number = metadata_lower.get(self.md_naming_scheme[self.series_number_index].lower())
-                        time_start = next((metadata_lower[key] for key in metadata_lower if key in time_start_aliases), None)
-                        exposure_time = next((metadata_lower[key] for key in metadata_lower if key in exposure_time_aliases), None)
-
-                        # Add them to our lists
-                        scan_list.append(scan_id)
-                        
-                        # Check if scan_id is in series_list, if not, create a new list
-                        if scan_id not in series_list:
-                            series_list[scan_id] = []
-
-                        series_list[scan_id].append((series_number, time_start, exposure_time))
-                    
-                    # Store data in dictionary
-                    sample_dict[sample_name] = {
-                        'scanlist': scan_list,
-                        'serieslist': series_list,
-                        'path': sample_folder
-                    }
-
-        self.sample_dict = sample_dict
-        return sample_dict
-
-    def selectSampleAndSeries(self):
-            """
-            Prompts the user to select a sample and one or more series of scans from that sample.
-            The user can choose to select all series of scans.
-            The selections will be stored as the 'selected_series' attribute and returned.
-            """
-            # Check if sample_dict has been generated
-            if not self.sample_dict:
-                print("Error: Sample dictionary has not been generated. Please run createSampleDictionary() first.")
-                return
-
-            while True:
-                # Show the user a list of sample names and get their selection
-                print("Please select a sample (or 'q' to exit):")
-                sample_names = list(self.sample_dict.keys())
-                for i, sample_name in enumerate(sample_names, 1):
-                    print(f"[{i}] {sample_name}")
-                print("[q] Exit")
-                selection = input("Enter the number of your choice: ")
-                if selection.lower() == 'q':
-                    print("Exiting selection.")
-                    return self.selected_series
-                else:
-                    sample_index = int(selection) - 1
-                    selected_sample = sample_names[sample_index]
-
-                # Show the user a choice between single image or image series and get their selection
-                print("\nWould you like to choose a single image or an image series? (or 'q' to exit)")
-                print("[1] Single Image")
-                print("[2] Image Series")
-                print("[q] Exit")
-                choice = input("Enter the number of your choice: ")
-                if choice.lower() == 'q':
-                    print("Exiting selection.")
-                    return self.selected_series
-                choice = int(choice)
-
-                # Get the selected sample's scan list and series list
-                scan_list = self.sample_dict[selected_sample]['scanlist']
-                series_list = self.sample_dict[selected_sample]['serieslist']
-
-                # Identify series scan IDs and single image scan IDs
-                series_scan_ids = set(series_list.keys())
-                single_image_scan_ids = [scan_id for scan_id in scan_list if scan_id not in series_scan_ids]
-
-                if choice == 1:
-                    # The user has chosen to select a single image
-                    print("\nPlease select a scan ID (or 'q' to exit):")
-                    for i, scan_id in enumerate(single_image_scan_ids, 1):
-                        print(f"[{i}] {scan_id}")
-                    print("[q] Exit")
-                    selection = input("Enter the number of your choice: ")
-                    if selection.lower() == 'q':
-                        print("Exiting selection.")
-                        return self.selected_series
-                    else:
-                        scan_id_index = int(selection) - 1
-                        selected_scan = single_image_scan_ids[scan_id_index]
-                        self.selected_series.append((selected_sample, selected_scan))
-                else:
-                    # The user has chosen to select an image series
-                    print("\nPlease select one or more series (Enter 'a' to select all series, 'q' to finish selection):")
-                    selected_series = []
-                    while True:
-                        for i, series_scan_id in enumerate(series_scan_ids, 1):
-                            series_data = series_list[series_scan_id]
-                            print(f"[{i}] Series {series_scan_id} (start time: {series_data[0][1]}, exposure time: {series_data[0][2]})")
-                        print("[a] All series")
-                        print("[q] Finish selection")
-                        selection = input("Enter the number(s) of your choice (comma-separated), 'a', or 'q': ")
-                        if selection.lower() == 'q':
-                            if selected_series:
-                                break
-                            else:
-                                print("Exiting selection.")
-                                return self.selected_series
-                        elif selection.lower() == 'a':
-                            selected_series = list(series_scan_ids)
-                            break
-                        else:
-                            # Get the series indices from the user's input
-                            series_indices = list(map(int, selection.split(',')))
-                            selected_series += [list(series_scan_ids)[i-1] for i in series_indices]
-                    self.selected_series.extend([(selected_sample, series) for series in selected_series])
-
-                print("\nSelection completed.")
-            return self.selected_series
-
-# -- Display the RAW TIFF using Matplotlib
-    def rawdisplay(self):
-        plt.close('all')
-        # plt.imshow(self.rawtiff_xr, cmap='jet')
-        lb = np.nanpercentile(self.rawtiff_xr, 10)
-        ub = np.nanpercentile(self.rawtiff_xr, 99)
-
-        extent = [self.rawtiff_xr['pix_x'].min(), self.rawtiff_xr['pix_x'].max(),
-          self.rawtiff_xr['pix_y'].min(), self.rawtiff_xr['pix_y'].max()]
-        
-        plt.imshow(self.rawtiff_xr, 
-                   interpolation='nearest', 
-                   cmap='jet',
-                   origin='lower', 
-                   vmax=ub, 
-                   vmin=lb,
-                   extent=extent)
-        plt.xlabel(self.rawtiff_xr['pix_x'].name)
-        plt.ylabel(self.rawtiff_xr['pix_y'].name)
-        plt.title('Raw TIFF Image')
-        plt.colorbar(label='Intensity')
-        plt.show()
-
-# -- Display the Reciprocal Space Map Corrected TIFF using Matplotlib
-    def recipdisplay(self):
-        plt.close('all')
-        lb = np.nanpercentile(self.reciptiff_xr, 10)
-        ub = np.nanpercentile(self.reciptiff_xr, 99)
-
-        extent = [self.reciptiff_xr[self.inplane_config].min(), self.reciptiff_xr[self.inplane_config].max(),
-                self.reciptiff_xr['q_z'].min(), self.reciptiff_xr['q_z'].max()]
-
-        plt.imshow(self.reciptiff_xr,
-                interpolation='nearest',
-                cmap='jet',
-                origin='lower',
-                vmax=ub,
-                vmin=lb,
-                extent=extent)
-
-        plt.xlabel(self.reciptiff_xr[self.inplane_config].name) # 'q$_{xy}$ (1/$\AA$)'
-        plt.ylabel(self.reciptiff_xr['q_z'].name) # 'q$_{z}$ (1/$\AA$)'
-        plt.title('Reciprocal Space Corrected Image')
-        plt.colorbar(label='Intensity')
-        plt.show()
-
-# -- Display the Caked TIFF using Matplotlib
-    def cakeddisplay(self):
-        plt.close('all')
-        # plt.imshow(self.cakedtiff_xr, cmap='jet')
-        lb = np.nanpercentile(self.cakedtiff_xr, 10)
-        ub = np.nanpercentile(self.cakedtiff_xr, 99)
-
-        extent = [self.cakedtiff_xr['qr'].min(), self.cakedtiff_xr['qr'].max(),
-                self.cakedtiff_xr['chi'].min(), self.cakedtiff_xr['chi'].max()]
-
-        plt.imshow(self.cakedtiff_xr,
-                interpolation='nearest',
-                cmap='jet',
-                origin='lower',
-                vmax=ub,
-                vmin=lb,
-                extent=extent)
-
-        plt.xlabel(self.cakedtiff_xr['qr'].name)
-        plt.ylabel(self.cakedtiff_xr['chi'].name)
-        plt.title('Caked Corrected Image')
-        plt.colorbar(label='Intensity')
-        plt.show()
-
-'''
