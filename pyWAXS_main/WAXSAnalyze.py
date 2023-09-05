@@ -1,27 +1,34 @@
 import os, pathlib, tifffile, pyFAI, pygix, json, zarr, random, inspect
+from PIL import Image
+from typing import Union, Tuple
+import matplotlib.pyplot as plt
+from tifffile import TiffWriter
 import xarray as xr
 import numpy as np
+from numpy.polynomial.polynomial import Polynomial
+# -- SciPy Modules 
 from scipy.ndimage.filters import gaussian_filter
 from scipy.ndimage import gaussian_filter
+from scipy.ndimage import binary_closing
 from scipy.signal import find_peaks
+from scipy.signal import convolve2d
 from scipy.spatial.distance import cdist
 from scipy.optimize import curve_fit
 from scipy.spatial import KDTree
 from scipy.interpolate import griddata
 from scipy.interpolate import interp1d
+# -- SciKit Modules 
 from skimage import feature
 from sklearn.neighbors import KDTree
-from scipy.signal import convolve2d
-from PIL import Image
-from typing import Union, Tuple
-import matplotlib.pyplot as plt
-from tifffile import TiffWriter
 from skimage.restoration import denoise_bilateral, denoise_tv_chambolle
 from skimage.filters import sobel
 from skimage.feature import canny
+from sklearn.cluster import DBSCAN
+# -- Hierarchical Density-Based Spatial Clustering 
+import hdbscan
+from hdbscan import HDBSCAN
 from collections import defaultdict
-from numpy.polynomial.polynomial import Polynomial
-
+from collections import Counter
 
 # - Custom Imports
 from WAXSTransform import WAXSTransform
@@ -94,6 +101,9 @@ class WAXSAnalyze:
         self.smoothed_img = None # Store Smoothed Image
         self.normalized_img = None # Store Normalized Image
         self.snrtemp = None # Temporary signal-to-noise ratio 
+
+        self.DoG = None # Difference of Gaussians 
+        self.maskedDoG = None # masked difference of Gaussians
 
 ## --- DATA LOADING & METADATA EXTRACTION --- ##
     # -- Image Loading
@@ -270,7 +280,7 @@ class WAXSAnalyze:
     # -- Display the RAW TIFF using XArray
     def rawdisplay_xr(self):
         plt.close('all')
-        self.rawtiff_xr.plot.imshow(interpolation='antialiased', cmap='jet',
+        self.rawtiff_xr.plot.imshow(interpolation='antialiased', cmap='turbo',
                                     vmin=np.nanpercentile(self.rawtiff_xr, 10),
                                     vmax=np.nanpercentile(self.rawtiff_xr, 99))
         plt.title('Raw TIFF Image')
@@ -279,7 +289,7 @@ class WAXSAnalyze:
     # -- Display the Reciprocal Space Map using XArray
     def recipdisplay_xr(self):
         plt.close('all')
-        self.reciptiff_xr.plot.imshow(interpolation='antialiased', cmap='jet',
+        self.reciptiff_xr.plot.imshow(interpolation='antialiased', cmap='turbo',
                                     vmin=np.nanpercentile(self.reciptiff_xr, 10),
                                     vmax=np.nanpercentile(self.reciptiff_xr, 99))
         plt.title('Missing Wedge Correction')
@@ -288,14 +298,14 @@ class WAXSAnalyze:
     # -- Display the Caked Image using XArray
     def cakeddisplay_xr(self):
         plt.close('all')
-        self.cakedtiff_xr.plot.imshow(interpolation='antialiased', cmap='jet',
+        self.cakedtiff_xr.plot.imshow(interpolation='antialiased', cmap='turbo',
                                     vmin=np.nanpercentile(self.cakedtiff_xr, 10),
                                     vmax=np.nanpercentile(self.cakedtiff_xr, 99))
         plt.title('Caked Image')
         plt.show()
 
     # -- Display Image (General)
-    def display_image(self, img, title='Image', cmap='jet'):
+    def display_image(self, img, title='Image', cmap='turbo'):
         plt.close('all')
 
         # Check for invalid or incompatible types
@@ -478,6 +488,77 @@ class WAXSAnalyze:
         
         return self.smoothed_img
 
+## --- IMAGE FOLDING --- ##
+# Modifying the fold_image method to keep the data from the longer quadrant and append it to the folded image.
+        
+    def fold_image(self, data_array, fold_axis):
+        """
+        Method to fold image along a specified axis.
+        
+        Parameters:
+        - data_array (xarray DataArray): The DataArray to fold
+        - fold_axis (str): The axis along which to fold the image
+        
+        Returns:
+        - xarray DataArray: The folded image
+        """
+        # Filter data for fold_axis >= 0 and fold_axis <= 0
+        positive_data = data_array.where(data_array[fold_axis] >= 0, drop=True)
+        negative_data = data_array.where(data_array[fold_axis] <= 0, drop=True)
+        
+        # Reverse negative_data for easier comparison
+        negative_data = negative_data.reindex({fold_axis: negative_data[fold_axis][::-1]})
+        
+        # Find the maximum coordinate of the shorter quadrant (positive_data)
+        max_positive_coord = float(positive_data[fold_axis].max())
+        
+        # Find the equivalent coordinate in the negative_data
+        abs_diff = np.abs(negative_data[fold_axis].values + max_positive_coord)
+        
+        # Minimize the difference
+        min_diff_idx = np.argmin(abs_diff)
+        
+        # Check if the lengths are equivalent
+        len_pos = len(positive_data[fold_axis])
+        len_neg = len(negative_data[fold_axis][:min_diff_idx+1])
+        
+        if len_pos != len_neg:
+            # Adjust the coordinate range for negative_data
+            for i in range(1, 4):  # Check 3 neighbors
+                new_idx = min_diff_idx + i
+                len_neg = len(negative_data[fold_axis][:new_idx+1])
+                if len_pos == len_neg:
+                    min_diff_idx = new_idx
+                    break
+                    
+        # Crop the negative_data to match positive_data length
+        negative_data_cropped = negative_data.isel({fold_axis: slice(0, min_diff_idx+1)})
+        
+        # Prepare the new data array
+        new_data = xr.zeros_like(positive_data)
+        
+        # Fold the image
+        for i in range(len(positive_data[fold_axis])):
+            pos_val = positive_data.isel({fold_axis: i}).values
+            neg_val = negative_data_cropped.isel({fold_axis: i}).values
+            
+            # Pixel comparison and averaging or summing
+            new_data.values[i] = np.where(
+                (pos_val > 0) & (neg_val > 0), (pos_val + neg_val) / 2,
+                np.where((pos_val == 0) & (neg_val > 0), neg_val, pos_val)
+            )
+            
+        # Append residual data from the longer quadrant if exists
+        if len(negative_data[fold_axis]) > min_diff_idx+1:
+            residual_data = negative_data.isel({fold_axis: slice(min_diff_idx+1, None)})
+            residual_data[fold_axis] = np.abs(residual_data[fold_axis])
+            new_data = xr.concat([new_data, residual_data], dim=fold_axis)
+            
+        # Update data_array with the folded image
+        data_array = new_data.sortby(fold_axis)
+        
+        return data_array
+
 ## --- CALCULATE SIGNAL-to-NOISE  --- ##
     # -- Calculating Signal-to-Noise Ratio (Internal)
     def calculate_SNR_for_class(self):
@@ -516,41 +597,36 @@ class WAXSAnalyze:
         return xarray_obj
 
 ## --- IMAGE INTERPOLATION  --- ##
-    def brute_force_interpolate(self, img: xr.DataArray, gap_threshold: int = 5) -> xr.DataArray:
-        """
-        Brute-force interpolation method to fill gaps in an image.
+    def brute_force_interpolation(self, data_array, pixelthreshold_range, step_size):
+        new_data = data_array.copy(deep=True)
         
-        Parameters:
-            img (xr.DataArray): Input image data
-            gap_threshold (int): Maximum size of gaps to interpolate
-        
-        Returns:
-            xr.DataArray: Interpolated image
-        """
-        interpolated_img = img.copy()
-        
-        rows, cols = img.shape
-        
-        for col in range(cols):
-            gap_start = None
-            for row in range(rows):
-                if img[row, col] != 0 and gap_start is not None:
-                    gap_end = row
-                    
-                    # Check if the gap size is within the threshold
-                    if gap_end - gap_start <= gap_threshold:
-                        # Interpolate
-                        interpolated_img[gap_start:gap_end, col] = np.interp(
-                            np.arange(gap_start, gap_end),
-                            [gap_start - 1, gap_end],
-                            [img[gap_start - 1, col], img[gap_end, col]]
-                        )
-                    
-                    gap_start = None
-                elif img[row, col] == 0 and gap_start is None:
-                    gap_start = row
-                    
-        return interpolated_img
+        # Using numpy's arange to create a float-compatible range
+        for pc in np.arange(pixelthreshold_range[0], pixelthreshold_range[1] + step_size, step_size):
+            for axis in data_array.dims:
+                other_axis = [dim for dim in data_array.dims if dim != axis][0]
+                
+                for i in range(len(data_array[other_axis].values)):
+                    intensity_values = data_array.isel({other_axis: i}).values
+                    start_gap = None
+                    gap_length = 0
+
+                    for j in range(len(intensity_values)):
+                        if np.isnan(intensity_values[j]) or intensity_values[j] == 0:
+                            if start_gap is None and j > 0:
+                                start_gap = j - 1
+                            gap_length += 1
+                        else:
+                            if start_gap is not None:
+                                end_gap = j
+                                if 0 < gap_length <= pc and end_gap < len(intensity_values) - 1:
+                                    interp_values = np.linspace(intensity_values[start_gap], intensity_values[end_gap], gap_length + 2)
+                                    if len(interp_values[1:-1]) == end_gap - start_gap - 1:
+                                        new_data.isel({other_axis: i}).values[start_gap + 1:end_gap] = interp_values[1:-1]
+
+                                start_gap = None
+                                gap_length = 0
+                        
+        return new_data
 
     @staticmethod
     def gaussian(x, a, b, c):
@@ -674,124 +750,478 @@ class WAXSAnalyze:
         gaps = self.classify_gaps(edge_img)
         return self.interpolate_gaps(img, gaps, threshold)
 
-## --- PEAK SEARCHING --- ##
-    # Method for generating Monte Carlo points
-    def generate_monte_carlo_points(self, num_points=100):
-        img = self.reciptiff_xr.values
-        x_max, y_max = img.shape
-        points = [(random.randint(0, x_max-1), random.randint(0, y_max-1)) for _ in range(num_points)]
-        return points
+## --- PEAK FINDING ALGORITHM ---- ##
+    # (STEP 1) Normalization: The input DataArray is normalized to '1' at the maximum value.
+    def normalize_data(self, img_xr):
+        return img_xr / np.nanmax(img_xr.values)
 
-    # Method for adaptive gradient ascent
-    def adaptive_gradient_ascent(self, point, threshold=0.001, initial_neighborhood=3):
-        x, y = point
-        img = self.normalized_img
-        neighborhood_size = initial_neighborhood
-        max_x, max_y = img.shape
-        # Add history to check for convergence
-        history = []
+    # (STEP 2) Initial Peak Identification: Peaks are initially identified using the Difference of Gaussians (DoG).
+    def initial_peak_identification(self, img_xr, sigma1, sigma2, threshold):
+        img_smooth1 = gaussian_filter(img_xr.fillna(0).values, sigma=sigma1)
+        img_smooth2 = gaussian_filter(img_xr.fillna(0).values, sigma=sigma2)
+        DoG = img_smooth1 - img_smooth2 # Difference of Gaussians Value
+        self.DoG = DoG
+        return np.where(DoG >= threshold, DoG, np.nan)
 
-        while True:
-            x = max(0, min(x, max_x - 1))
-            y = max(0, min(y, max_y - 1))
+    # (STEP 3) Edge Case Handling: Peaks at the edges or interfaces of data/no data regions are discarded or reassessed.
+    def handle_edge_cases(self, img_xr, initial_peaks):
+        edge_mask = np.isnan(gaussian_filter(img_xr.fillna(0).values, sigma=1))
+        initial_peaks[edge_mask] = np.nan
+        return initial_peaks
 
-            if img[x, y] <= 0:
-                x, y = x + 1, y + 1
-                continue
-
-            x_min = max(0, x - neighborhood_size)
-            x_max = min(img.shape[0], x + neighborhood_size)
-            y_min = max(0, y - neighborhood_size)
-            y_max = min(img.shape[1], y + neighborhood_size)
+    # (STEP 4) Clustering Local Maxima: For multiple peaks found around a single local maxima, we use clustering (DBSCAN or HDBSCAN) to identify groups of localized peaks.
+    def cluster_local_maxima(self, initial_peaks, method='DBSCAN', eps=3, min_samples=2):
+        peak_coords = np.column_stack(np.where(~np.isnan(initial_peaks)))
+        if peak_coords.shape[0] > 0:
+            if method == 'DBSCAN':
+                clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(peak_coords)
+            elif method == 'HDBSCAN':
+                clustering = hdbscan.HDBSCAN(min_cluster_size=min_samples).fit(peak_coords)
+            else:
+                raise ValueError("Invalid clustering method. Choose either 'DBSCAN' or 'HDBSCAN'.")
             
-            neighborhood = img[x_min:x_max, y_min:y_max]
-            local_max_x, local_max_y = np.unravel_index(neighborhood.argmax(), neighborhood.shape)
-            local_max_x += x_min
-            local_max_y += y_min
+            cluster_labels = clustering.labels_
+            # print("Unique cluster labels:", set(cluster_labels))
 
-            history.append((local_max_x, local_max_y))
-            if len(history) > 50:
-                last_50 = np.array(history[-50:])
-                avg = np.mean(last_50, axis=0)
-                if np.all(np.abs((last_50 - avg) / avg) < 0.05):
-                    return avg
+            for cluster_id in set(cluster_labels):
+                if cluster_id == -1:
+                    continue
+                # coords_in_cluster = peak_coords[cluster_labels == cluster_id]
+                # max_coord = coords_in_cluster[np.argmax(initial_peaks[coords_in_cluster[:, 0], coords_in_cluster[:, 1]])]
+                # initial_peaks[coords_in_cluster[:, 0], coords_in_cluster[:, 1]] = np.nan
+                # initial_peaks[max_coord[0], max_coord[1]] = initial_peaks[max_coord[0], max_coord[1]]
+            
+                coords_in_cluster = peak_coords[cluster_labels == cluster_id]
+                
+                # Find the local maxima within the cluster instead of median
+                intensities = self.DoG[coords_in_cluster[:, 0], coords_in_cluster[:, 1]]
+                max_idx = np.argmax(intensities)
+                max_coord = coords_in_cluster[max_idx]
+                
+                # Nullify other peaks in the cluster
+                initial_peaks[coords_in_cluster[:, 0], coords_in_cluster[:, 1]] = np.nan
+                
+                # Store the local maxima
+                initial_peaks[max_coord[0], max_coord[1]] = self.DoG[max_coord[0], max_coord[1]]
+        
+        return initial_peaks
+    
+    # (STEP 5) Recentering Algorithm: Recenter peaks to the local maxima.
+    def recenter_peaks(self, peaks, k=3, radius=5):
+        """
+        Recenter peaks to the local maxima in their neighborhoods.
+        
+        Parameters:
+        - peaks (array): 2D array of peaks with x and y coordinates.
+        - k (int): Number of nearest neighbors to consider for recentering.
+        - radius (float): Radius within which to search for neighbors.
+        
+        Returns:
+        - recentered_peaks (array): Recentered peaks.
+        """
+        # Create a KDTree for efficient nearest neighbor search
+        tree = KDTree(peaks)
+        
+        recentered_peaks = []
+        for peak in peaks:
+            # Query the KDTree to find the nearest peaks
+            # distances, neighbor_indices = tree.query(peak.reshape(1, -1), k=k)
+            k_local = min(k, len(tree.data) - 1)  # Adjust k based on the number of available points
+            distances, neighbor_indices = tree.query(peak.reshape(1, -1), k=k_local)
 
-            if np.abs(local_max_x - x) <= threshold and np.abs(local_max_y - y) <= threshold:
-                return (local_max_x, local_max_y)
+            # Filter neighbors within the given radius
+            valid_indices = neighbor_indices[distances <= radius]
+            neighbors = peaks[valid_indices]
+            
+            # Check the local maxima among neighbors
+            local_maxima = np.argmax(self.DoG[neighbors[:, 0], neighbors[:, 1]])
+            recentered_peak = neighbors[local_maxima]
+            
+            # Recenter the peak
+            recentered_peaks.append(recentered_peak)
+        
+        return np.array(recentered_peaks)
+    
+    # (PROCEDURE) Find Peaks Using Difference of Gaussians
+    # -- Variant 1: Recenter -> Cluster
+    def find_peaks_DoG(self, img_xr, sigma1=1.0, sigma2=2.0, threshold=0.006, clustering_method='DBSCAN', eps=1, min_samples=2, k=3, radius=5):
+        """
+        Find peaks in a 2D array using the Difference of Gaussians (DoG) method.
 
-            x, y = local_max_x, local_max_y
+        Parameters:
+        - img_xr (xarray DataArray): The input 2D array containing intensity values.
+        - sigma1 (float, default=1.0): The standard deviation for the first Gaussian filter.
+        - sigma2 (float, default=2.0): The standard deviation for the second Gaussian filter.
+        - threshold (float, default=0.2): Threshold for initial peak identification.
+        - clustering_method (str, default='DBSCAN'): The clustering method to use ('DBSCAN' or 'HDBSCAN').
+        - eps (float, default=3): The maximum distance between two samples for them to be considered as in the same cluster (DBSCAN).
+        - min_samples (int, default=2): The number of samples in a neighborhood for a point to be considered as a core point (DBSCAN).
+        - k (int, default=3): The number of nearest neighbors to consider for the recentering algorithm.
+        - radius (float, default=5): The radius within which to search for neighbors in the recentering algorithm.
 
-            if self.snr < 1.0:
-                neighborhood_size *= 2
+        Returns:
+        - img_xr (xarray DataArray): The input array with peak information stored in its attrs attribute.
+        """
+        # Validate sigma values
+        if sigma2 <= sigma1:
+            raise ValueError("sigma2 must be greater than sigma1.")
+        
+        # Step 0: Append mask to DataArray
+        # img_xr = self.append_mask_to_dataarray(img_xr)
 
-    # Method to find peaks
-    def find_peaks(self, num_points=100, threshold=0.1, initial_neighborhood=3):
-        self.normalize_and_calculate_SNR()
-        points = self.generate_monte_carlo_points(num_points)
-        peak_points = []
-        for point in points:
-            peak_point = self.adaptive_gradient_ascent(point, threshold, initial_neighborhood)
-            if peak_point:
-                peak_points.append(peak_point)
-        peak_points = self.group_and_find_median(peak_points)
-        self.visualize_peaks(peak_points)
+        # Step 1: Normalize Data
+        img_normalized = self.normalize_data(img_xr)
+        
+        # Step 2: Initial Peak Identification
+        initial_peaks = self.initial_peak_identification(img_normalized, sigma1, sigma2, threshold)
+        
+        # Step 3: Handle Edge Cases
+        initial_peaks = self.handle_edge_cases(img_normalized, initial_peaks)
+        
+        # Debugging information
+        print("Number of initial peaks:", np.count_nonzero(~np.isnan(initial_peaks)))
 
-    # Method to group similar points and find the median
-    def group_and_find_median(self, peak_points, distance_threshold=0.03):
-        peak_points = np.array(peak_points)
-        grouped_peaks = defaultdict(list)
-        visited = set()
+        # Step 4: Recenter Peaks
+        valid_peak_coords = np.column_stack(np.where(~np.isnan(initial_peaks)))
+        recentered_peak_coords = self.recenter_peaks(valid_peak_coords, k=k, radius=radius)
 
-        for i, point1 in enumerate(peak_points):
-            if i in visited:
-                continue
-            group = [point1]
-            visited.add(i)
+        # Create a new array for recentered peaks based on the original shape
+        recentered_peaks = np.full(initial_peaks.shape, np.nan)
+        for coord in recentered_peak_coords:
+            recentered_peaks[coord[0], coord[1]] = self.DoG[coord[0], coord[1]]
 
-            for j, point2 in enumerate(peak_points[i+1:], start=i+1):
-                dist = np.linalg.norm(point1 - point2)
-                if dist < distance_threshold:
-                    group.append(point2)
-                    visited.add(j)
+        print("Number of recentered peaks:", np.count_nonzero(~np.isnan(recentered_peaks)))
+        
+        # Step 5: Cluster Local Maxima
+        clustered_peaks = self.cluster_local_maxima(recentered_peaks, method=clustering_method, eps=eps, min_samples=min_samples)
+        
+        print("Number of final peaks:", np.count_nonzero(~np.isnan(clustered_peaks)))
+        
+        # Initialize output DataArray for peaks
+        peaks_xr = xr.DataArray(clustered_peaks, coords=img_xr.coords, dims=img_xr.dims)
+        
+        # Store peak information in the attrs attribute of the original DataArray
+        img_xr.attrs['peaks'] = peaks_xr
+        
+        return img_xr
 
-            median_point = np.median(np.array(group), axis=0)
-            grouped_peaks[tuple(median_point)] = len(group)
-
-        return grouped_peaks
-
-    # Method to visualize peaks
-    def visualize_peaks(self, peak_points, point_size_factor=20, coords: dict = None):
-        img = self.reciptiff_xr.values
+    #  Display Image Output (w/ peaks & DoG): Modified version of the display_image method to overlay scatter points for peak locations
+    def display_image_with_peaks_and_DoG(self, img, title='Image with Peaks', cmap='turbo'):
         plt.close('all')
-        vmin = np.nanpercentile(img, 10)
-        vmax = np.nanpercentile(img, 99)
-        plt.imshow(np.flipud(img), 
-                cmap='jet', 
-                vmin=vmin, 
-                vmax=vmax, 
-                extent=[coords['x_min'], 
-                        coords['x_max'], 
-                        coords['y_min'], 
-                        coords['y_max']])
-        for point, count in peak_points.items():
-            plt.scatter(point[1], point[0], s=count * point_size_factor, c='white')
-        plt.title('Peaks Visualized')
-        plt.xlabel('qxy')
-        plt.ylabel('qz')
+        plt.figure(figsize=(15, 7))
+
+        DoG = self.DoG
+        extent = None
+
+        if isinstance(img, xr.DataArray):
+            img_values = img.values
+            peaks = img.attrs.get('peaks', None)
+            coords_names = list(img.coords.keys())
+            if len(coords_names) == 2:
+                extent = [
+                    img.coords[coords_names[1]].min(),
+                    img.coords[coords_names[1]].max(),
+                    img.coords[coords_names[0]].min(),
+                    img.coords[coords_names[0]].max()
+                ]
+                ylabel, xlabel = coords_names
+
+        else:
+            img_values = img
+            peaks = None
+
+        # Calculate vmin and vmax for the original image
+        vmin = np.nanpercentile(img_values, 10)
+        vmax = np.nanpercentile(img_values, 99)
+
+        plt.subplot(1, 2, 1)
+        plt.imshow(np.flipud(img_values),
+                cmap=cmap,
+                vmin=vmin,  # Use calculated vmin and vmax
+                vmax=vmax,  
+                extent=extent,
+                aspect='auto')
         plt.colorbar()
+        plt.title(f"{title} - Original")
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
+
+        if peaks is not None:
+            peak_coords = np.column_stack(np.where(~np.isnan(peaks.values)))
+            peak_x_values = peaks.coords[coords_names[1]].values[peak_coords[:, 1]]
+            peak_y_values = peaks.coords[coords_names[0]].values[peak_coords[:, 0]]
+            plt.scatter(peak_x_values, peak_y_values, c='red', marker='o')
+
+        plt.subplot(1, 2, 2)
+        plt.imshow(np.flipud(DoG),
+                cmap=cmap,
+                extent=extent,
+                aspect='auto')
+        plt.colorbar()
+        plt.title(f"{title} - DoG")
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
+
+        plt.tight_layout()
         plt.show()
 
-'''
-# -- Alternative 2D Peak Finder
-    def detect_2D_peaks(self, threshold=0.5):
-        # Finding peaks in image intensity
-        peaks = find_peaks(self.corrected_tiff, threshold)
-        self.peak_positions_pixel = np.array(peaks[0])
+    #  Display Image Output (w/ peaks): Modified version of the display_image method to overlay scatter points for peak locations
+    def display_image_with_peaks(self, img, title='Image with Peaks', cmap='turbo'):
+        plt.close('all')
 
-        # Getting coordinates with respect to the image
-        self.peak_positions_coords = [self.pixel_to_coords(pixel) for pixel in self.peak_positions_pixel]
-'''
+        # Check for invalid or incompatible types
+        if img is None or not isinstance(img, (np.ndarray, xr.DataArray)):
+            raise ValueError("The input image is None or not of a compatible type.")
 
+        # Initialize extent
+        extent = None
+
+        # Check for xarray DataArray
+        if isinstance(img, xr.DataArray):
+            img_values = img.values
+            peaks = img.attrs.get('peaks', None)  # Retrieve peaks from attrs
+
+            # Extract extent and axis labels from xarray coordinates if available
+            coords_names = list(img.coords.keys())
+            if len(coords_names) == 2:
+                extent = [
+                    img.coords[coords_names[1]].min(),
+                    img.coords[coords_names[1]].max(),
+                    img.coords[coords_names[0]].min(),
+                    img.coords[coords_names[0]].max()
+                ]
+                ylabel, xlabel = coords_names
+        else:
+            img_values = img
+            peaks = None
+
+            # Use self.coords if available
+            if self.coords is not None:
+                extent = [
+                    self.coords['x_min'],
+                    self.coords['x_max'],
+                    self.coords['y_min'],
+                    self.coords['y_max']
+                ]
+                xlabel, ylabel = 'qxy', 'qz'
+
+        # Check for empty or all NaN array
+        if np.all(np.isnan(img_values)) or img_values.size == 0:
+            raise ValueError("The input image is empty or contains only NaN values.")
+
+        vmin = np.nanpercentile(img_values, 10)
+        vmax = np.nanpercentile(img_values, 99)
+
+        plt.imshow(np.flipud(img_values),
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                extent=extent,
+                aspect='auto')  # Ensure the aspect ratio is set automatically
+
+        plt.colorbar()
+
+        # Overlay scatter points for peak locations
+        if peaks is not None:
+            peak_coords = np.column_stack(np.where(~np.isnan(peaks.values)))
+            peak_x_values = peaks.coords[coords_names[1]].values[peak_coords[:, 1]]
+            peak_y_values = peaks.coords[coords_names[0]].values[peak_coords[:, 0]]
+            plt.scatter(peak_x_values, peak_y_values, c='red', marker='o')
+
+        plt.title(title)
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
+        # plt.colorbar()
+        plt.show()
+        
+    # Variant 2: Cluster -> Recenter
+    def find_peaks_DoG_CR(self, img_xr, sigma1=1.0, sigma2=2.0, threshold=0.006, clustering_method='DBSCAN', eps=1, min_samples=2, k=3, radius=5):
+        """
+        Find peaks in a 2D array using the Difference of Gaussians (DoG) method.
+
+        Parameters:
+        - img_xr (xarray DataArray): The input 2D array containing intensity values.
+        - sigma1 (float, default=1.0): The standard deviation for the first Gaussian filter.
+        - sigma2 (float, default=2.0): The standard deviation for the second Gaussian filter.
+        - threshold (float, default=0.2): Threshold for initial peak identification.
+        - clustering_method (str, default='DBSCAN'): The clustering method to use ('DBSCAN' or 'HDBSCAN').
+        - eps (float, default=3): The maximum distance between two samples for them to be considered as in the same cluster (DBSCAN).
+        - min_samples (int, default=2): The number of samples in a neighborhood for a point to be considered as a core point (DBSCAN).
+        - k (int, default=3): The number of nearest neighbors to consider for the recentering algorithm.
+        - radius (float, default=5): The radius within which to search for neighbors in the recentering algorithm.
+
+        Returns:
+        - img_xr (xarray DataArray): The input array with peak information stored in its attrs attribute.
+        """
+
+        if sigma2 <= sigma1:
+            raise ValueError("sigma2 must be greater than sigma1.")
+        
+        # Step 1: Normalize Data
+        img_normalized = self.normalize_data(img_xr)
+        
+        # Step 2: Initial Peak Identification
+        initial_peaks = self.initial_peak_identification(img_normalized, sigma1, sigma2, threshold)
+        
+        # Step 3: Handle Edge Cases
+        initial_peaks = self.handle_edge_cases(img_normalized, initial_peaks)
+        
+        # Debugging information
+        print("Number of initial peaks:", np.count_nonzero(~np.isnan(initial_peaks)))
+
+        # Step 4: Cluster Local Maxima
+        clustered_peaks = self.cluster_local_maxima(initial_peaks, method=clustering_method, eps=eps, min_samples=min_samples)
+        
+        print("Number of final peaks:", np.count_nonzero(~np.isnan(clustered_peaks)))
+
+        # Convert clustered_peaks to valid coordinates for KDTree
+        valid_peak_coords = np.column_stack(np.where(~np.isnan(clustered_peaks)))
+        
+        # Step 5: Recenter Peaks
+        recentered_peak_coords = self.recenter_peaks(valid_peak_coords, k=k, radius=radius)
+        
+        # Create a new array for recentered peaks based on the original shape
+        recentered_peaks = np.full(clustered_peaks.shape, np.nan)
+        for coord in recentered_peak_coords:
+            recentered_peaks[coord[0], coord[1]] = self.DoG[coord[0], coord[1]]
+
+        print("Number of recentered peaks:", np.count_nonzero(~np.isnan(recentered_peaks)))
+
+        # Initialize output DataArray for peaks
+        peaks_xr = xr.DataArray(recentered_peaks, coords=img_xr.coords, dims=img_xr.dims)
+        
+        # Store peak information in the attrs attribute of the original DataArray
+        img_xr.attrs['peaks'] = peaks_xr
+        
+        return img_xr
+
+# -- Update class methods to use DataSet v. DataArray
+    '''
+    # (STEP 0) Append a boolean mask of null value sto the dataarray to overlay on the difference of Gaussians.
+    def append_mask_to_dataarray_DS(self, img_xr):
+        """
+        Appends a mask layer to the xarray DataArray to set zero-intensity regions to NaN.
+
+        Parameters:
+        - img_xr (xarray DataArray): The input 2D array containing intensity values.
+
+        Returns:
+        - img_ds (xarray DataSet): The modified DataSet with an additional mask layer.
+        """
+        zero_intensity_mask = (img_xr > 0).astype(int)  # Convert to boolean and then to int
+
+        # Create a DataSet from the original DataArray
+        img_ds = xr.Dataset({'original_data': img_xr})
+
+        # Add the mask as a new DataArray inside the DataSet
+        img_ds['mask'] = xr.DataArray(zero_intensity_mask.values, coords=img_xr.coords, dims=img_xr.dims)
+
+        return img_ds
+    
+    # (STEP 1) Normalization: The input DataArray is normalized to '1' at the maximum value.
+    def normalize_data_DS(self, img_xr):
+        return img_xr['original_data'] / np.nanmax(img_xr['original_data'].values)
+
+    # (STEP 2) Initial Peak Identification: Peaks are initially identified using the Difference of Gaussians (DoG).
+    def initial_peak_identification_DS(self, img_ds, sigma1, sigma2, threshold):
+        img_xr = img_ds['original_data']
+        img_smooth1 = gaussian_filter(img_xr.fillna(0).values, sigma=sigma1)
+        img_smooth2 = gaussian_filter(img_xr.fillna(0).values, sigma=sigma2)
+        DoG = img_smooth1 - img_smooth2  # Difference of Gaussians Value
+        
+        # Apply NaN mask to DoG using the mask attribute if present
+        mask = img_xr.attrs.get('mask', None)
+        if mask is not None:
+            maskedDoG = np.where(mask == 0, np.nan, DoG)
+        else:
+            maskedDoG = DoG
+            
+        self.DoG = xr.DataArray(DoG, coords=img_xr.coords, dims=img_xr.dims)
+        self.maskedDoG = xr.DataArray(maskedDoG, coords=img_xr.coords, dims=img_xr.dims)
+        img_ds['DoG'] = self.DoG
+        img_ds['maskedDoG'] = self.maskedDoG
+        
+        return img_ds
+
+    # (STEP 3) Edge Case Handling: Peaks at the edges or interfaces of data/no data regions are discarded or reassessed.
+    def handle_edge_cases(self, img_ds, initial_peaks):
+        img_xr = img_ds['original_data']
+        edge_mask = np.isnan(gaussian_filter(img_xr.fillna(0).values, sigma=1))
+        initial_peaks[edge_mask] = np.nan
+
+        # return img_ds
+        return initial_peaks
+    '''
+    
+    def find_peaks_DoG_DS(self, img_xr, sigma1=1.0, sigma2=2.0, threshold=0.006, clustering_method='DBSCAN', eps=1, min_samples=2, k=3, radius=5):
+        """
+        Find peaks in a 2D array using the Difference of Gaussians (DoG) method.
+
+        Parameters:
+        - img_xr (xarray DataArray): The input 2D array containing intensity values.
+        - sigma1 (float, default=1.0): The standard deviation for the first Gaussian filter.
+        - sigma2 (float, default=2.0): The standard deviation for the second Gaussian filter.
+        - threshold (float, default=0.2): Threshold for initial peak identification.
+        - clustering_method (str, default='DBSCAN'): The clustering method to use ('DBSCAN' or 'HDBSCAN').
+        - eps (float, default=3): The maximum distance between two samples for them to be considered as in the same cluster (DBSCAN).
+        - min_samples (int, default=2): The number of samples in a neighborhood for a point to be considered as a core point (DBSCAN).
+        - k (int, default=3): The number of nearest neighbors to consider for the recentering algorithm.
+        - radius (float, default=5): The radius within which to search for neighbors in the recentering algorithm.
+
+        Returns:
+        - img_xr (xarray DataArray): The input array with peak information stored in its attrs attribute.
+        """
+        # Validate sigma values
+        if sigma2 <= sigma1:
+            raise ValueError("sigma2 must be greater than sigma1.")
+        
+        # Step 0: Append mask to DataArray
+        # img_xr = self.append_mask_to_dataarray(img_xr)
+
+        # Step 1: Normalize Data
+        img_normalized = self.normalize_data(img_xr)
+        
+        # Step 2: Initial Peak Identification
+        initial_peaks = self.initial_peak_identification(img_normalized, sigma1, sigma2, threshold)
+        
+        # Step 3: Handle Edge Cases
+        initial_peaks = self.handle_edge_cases(img_normalized, initial_peaks)
+        
+        # Debugging information
+        print("Number of initial peaks:", np.count_nonzero(~np.isnan(initial_peaks)))
+
+        # Step 4: Recenter Peaks
+        valid_peak_coords = np.column_stack(np.where(~np.isnan(initial_peaks)))
+        recentered_peak_coords = self.recenter_peaks(valid_peak_coords, k=k, radius=radius)
+
+        # Create a new array for recentered peaks based on the original shape
+        recentered_peaks = np.full(initial_peaks.shape, np.nan)
+        for coord in recentered_peak_coords:
+            recentered_peaks[coord[0], coord[1]] = self.DoG[coord[0], coord[1]]
+
+        print("Number of recentered peaks:", np.count_nonzero(~np.isnan(recentered_peaks)))
+        
+        # Step 5: Cluster Local Maxima
+        clustered_peaks = self.cluster_local_maxima(recentered_peaks, method=clustering_method, eps=eps, min_samples=min_samples)
+        
+        print("Number of final peaks:", np.count_nonzero(~np.isnan(clustered_peaks)))
+        
+        # Initialize output DataArray for peaks
+        peaks_xr = xr.DataArray(clustered_peaks, coords=img_xr.coords, dims=img_xr.dims)
+
+        # Create DataSet to include original data, mask, DoG, and maskedDoG
+        output_ds = xr.Dataset({
+            'original_data': img_xr,
+            'mask': self.append_mask_to_dataarray(img_xr)['mask'],
+            'DoG': self.DoG,
+            'masked_DoG': self.maskedDoG,
+            'peaks': peaks_xr
+        })
+
+        # Return the DataSet instead of DataArray
+        return output_ds
+
+##########################################################################################
 ## -- PSEUDOCODE LOGIC SEGMENT -- ##
 # This will normalize the image, calculate SNR, generate random points,
 # perform adaptive gradient ascent to find peaks, group them, and visualize them.

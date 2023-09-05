@@ -34,6 +34,7 @@ class WAXSDiffSim:
         for path in file_paths:
             self.read_poscar(path)
 
+    # -- READ POSCAR FILE: Read-in the POSCAR input file.
     def read_poscar(self, address: Union[Path, str]):
         f = open(address)
         ind = 0
@@ -101,8 +102,8 @@ class WAXSDiffSim:
         self.data.loc[len(self.data)] = [address, a1, a2, a3, position, None, None]
         # return a1,a2,a3,position
 
-    # Bragg Peak Calculations
-    def Bragg_peaks(a1,a2,a3,positions,thetax,thetay,hkl_dimension):
+    # -- BRAGG PEAK CALCULATION: Calculate the position of the Bragg Peaks.
+    def Bragg_peaks(self, a1, a2, a3, positions, thetax, thetay, hkl_dimension):
         """
         Description: Bragg_peaks function calculate the position of Bragg peaks in reciprocal space using lattice parameters and position of atoms read from the POSCAR file.
         Two rotation angles respect to x and y axis are added to adjust the orientation of the single crystal.
@@ -167,8 +168,8 @@ class WAXSDiffSim:
         Bpeaks=np.concatenate((G1,G2,G3,F), axis=0)
         return Bpeaks,pow(G1*G1+G2*G2,0.5),pow(G3*G3,0.5),F
 
-    # Intensity Calculations
-    def intensity(gridx,gridz,Bpeaks,sigma1,sigma2,sigma3,hkl_dimension):
+    # -- INTENSITY CALCULATIONS: Calculate the intensity of the Bragg Peaks from the atomic form factor.
+    def intensity(self, gridx, gridz, Bpeaks, sigma1, sigma2, sigma3, hkl_dimension):
         iMiller=hkl_dimension*2+1
         G1=Bpeaks[0:iMiller,:,:]+np.finfo(float).eps
         G2=Bpeaks[iMiller:2*iMiller,:,:]+np.finfo(float).eps
@@ -216,6 +217,7 @@ class WAXSDiffSim:
                 I0[x,y]=np.sum(Intensity)
         return I0
 
+    # -- GIWAXS PEAK FINDER:
     def GIWAXS_peak_finder(data,neighborhood_size,threshold,print_peak_position,qzmax,qxymax,qzmin,colorbar):
         data_max = ndimage.maximum_filter(data, neighborhood_size)
         maxima = (data == data_max)
@@ -272,7 +274,9 @@ class WAXSDiffSim:
                     "q=","%.3f" % sorted_data[counter][2])
                 counter=counter+1
 
-    def diffuse(a1,a2,a3,positions,thetax,thetay,hkl_dimension,shift):
+# -- Diffuse Code Implementation
+    '''
+    def diffuse(self, a1,a2,a3,positions,thetax,thetay,hkl_dimension,shift):
         # Lattice parameters M matrix in cartesian coordinate(angstrom)
         M=[a1,a2,a3]
         M=np.asarray(M)
@@ -337,7 +341,7 @@ class WAXSDiffSim:
         Bpeaks=np.concatenate((G1,G2-shift,G3,F), axis=0)
         return Bpeaks
     
-    def intensity_diffuse(gridx,gridz,Bpeaks,sigma1,sigma2,sigma3,hkl_dimension):
+    def intensity_diffuse(self, gridx,gridz,Bpeaks,sigma1,sigma2,sigma3,hkl_dimension):
         iMiller=hkl_dimension*2+1
         idiffuse=2
         G1=Bpeaks[0:iMiller,:,:]+np.finfo(float).eps
@@ -385,3 +389,4 @@ class WAXSDiffSim:
                 Intensity=I1*I2*I3*F
                 I0[x,y]=np.sum(Intensity)
         return I0
+    '''
