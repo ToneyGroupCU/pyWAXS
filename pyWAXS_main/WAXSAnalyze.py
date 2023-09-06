@@ -29,6 +29,9 @@ import hdbscan
 from hdbscan import HDBSCAN
 from collections import defaultdict
 from collections import Counter
+from collections import namedtuple
+from IPython.display import clear_output
+from typing import Optional
 
 # - Custom Imports
 from WAXSTransform import WAXSTransform
@@ -490,7 +493,6 @@ class WAXSAnalyze:
 
 ## --- IMAGE FOLDING --- ##
 # Modifying the fold_image method to keep the data from the longer quadrant and append it to the folded image.
-        
     def fold_image(self, data_array, fold_axis):
         """
         Method to fold image along a specified axis.
@@ -595,160 +597,6 @@ class WAXSAnalyze:
         xarray_obj.attrs['snr'] = snr
         self.snrtemp = snr
         return xarray_obj
-
-## --- IMAGE INTERPOLATION  --- ##
-    def brute_force_interpolation(self, data_array, pixelthreshold_range, step_size):
-        new_data = data_array.copy(deep=True)
-        
-        # Using numpy's arange to create a float-compatible range
-        for pc in np.arange(pixelthreshold_range[0], pixelthreshold_range[1] + step_size, step_size):
-            for axis in data_array.dims:
-                other_axis = [dim for dim in data_array.dims if dim != axis][0]
-                
-                for i in range(len(data_array[other_axis].values)):
-                    intensity_values = data_array.isel({other_axis: i}).values
-                    start_gap = None
-                    gap_length = 0
-
-                    for j in range(len(intensity_values)):
-                        if np.isnan(intensity_values[j]) or intensity_values[j] == 0:
-                            if start_gap is None and j > 0:
-                                start_gap = j - 1
-                            gap_length += 1
-                        else:
-                            if start_gap is not None:
-                                end_gap = j
-                                if 0 < gap_length <= pc and end_gap < len(intensity_values) - 1:
-                                    interp_values = np.linspace(intensity_values[start_gap], intensity_values[end_gap], gap_length + 2)
-                                    if len(interp_values[1:-1]) == end_gap - start_gap - 1:
-                                        new_data.isel({other_axis: i}).values[start_gap + 1:end_gap] = interp_values[1:-1]
-
-                                start_gap = None
-                                gap_length = 0
-                        
-        return new_data
-
-    @staticmethod
-    def gaussian(x, a, b, c):
-        return a * np.exp(-((x - b)**2) / (2 * c**2))
-
-    def edge_detection(self, img, method='sobel'):
-        if method == 'sobel':
-            edge_img = sobel(img.values)
-        elif method == 'canny':
-            edge_img = canny(img.values)
-        else:
-            raise ValueError("Invalid edge detection method.")
-        
-        # Define a kernel to check for adjacent zero-valued pixels
-        kernel = np.array([[1, 1, 1],
-                        [1, 0, 1],
-                        [1, 1, 1]])
-        
-        # Convolve the edge image with the kernel
-        zero_adjacency = convolve2d(edge_img, kernel, mode='same')
-        
-        # Filter out edge pixels that are not adjacent to zero-valued pixels
-        filtered_edge_img = edge_img * (zero_adjacency > 0)
-        
-        return filtered_edge_img
-
-    def classify_gaps(self, edge_img, tolerance = 5, padding = 5):
-        # Initialize gap information
-        gaps = {'horizontal': [], 'vertical': [], 'missing_wedge': []}
-        n_rows, n_cols = edge_img.shape
-        
-        # Loop through rows and columns to identify gaps
-        for i, row in enumerate(edge_img):
-            gap_start = None
-            for j, pixel in enumerate(row):
-                if pixel == 0 and gap_start is None:
-                    gap_start = j
-                elif pixel != 0 and gap_start is not None:
-                    gaps['horizontal'].append((i, gap_start, j))
-                    gap_start = None
-
-        for i, col in enumerate(edge_img.T):
-            gap_start = None
-            for j, pixel in enumerate(col):
-                if pixel == 0 and gap_start is None:
-                    gap_start = j
-                elif pixel != 0 and gap_start is not None:
-                    gaps['vertical'].append((i, gap_start, j))
-                    gap_start = None
-        
-        # Identify potential missing wedges (gaps centered at q_z = 0)
-        center = edge_img.shape[0] // 2
-        # tolerance = 5  # Adjust as needed
-        for i, start, end in gaps['horizontal']:
-            if abs(i - center) < tolerance:
-                gaps['missing_wedge'].append((i, start, end))
-
-        # Curvature checking logic
-        for direction, gap_list in gaps.items():
-            new_gap_list = []
-            for gap in gap_list:
-                # padding = 5  # Default padding for curvature check
-                
-                if direction == 'horizontal':
-                    start = max(gap[1] - padding, 0)
-                    end = min(gap[2] + padding, n_cols)
-                    surrounding_pixels = edge_img[gap[0], start:end]
-                else:
-                    start = max(gap[1] - padding, 0)
-                    end = min(gap[2] + padding, n_rows)
-                    surrounding_pixels = edge_img[start:end, gap[0]]
-
-                p = Polynomial.fit(np.arange(len(surrounding_pixels)), surrounding_pixels, 2)
-                
-                # Check curvature. You may adjust the tolerance.
-                if len(p.convert().coef) > 2 and abs(p.convert().coef[2]) > 1e-5:
-                    new_gap_list.append(gap)
-
-            gaps[direction] = new_gap_list
-
-        return gaps
-
-    def interpolate_gaps(self, img, gaps, threshold=0.1):
-        interpolated_img = img.copy()
-
-        # Horizontal interpolation
-        for i, start, end in gaps['horizontal']:
-            if end - start < img.shape[1] * threshold:
-                interpolated_img[i, start:end] = np.interp(
-                    np.arange(start, end),
-                    [start - 1, end],
-                    [img[i, start - 1], img[i, end]]
-                )
-
-        # Vertical interpolation
-        for i, start, end in gaps['vertical']:
-            interpolated_img[start:end, i] = np.interp(
-                np.arange(start, end),
-                [start - 1, end],
-                [img[start - 1, i], img[end, i]]
-            )
-
-        # Missing wedge interpolation logic
-        # Identify potential missing wedges (gaps centered at q_z = 0)
-        potential_wedges = [gap for gap in gaps['horizontal'] if abs(gap[0] - img.shape[0] // 2) < 5]
-
-        for i, start, end in potential_wedges:
-            # Check if the gap size is below the threshold
-            if end - start < img.shape[1] * threshold:
-                # Interpolate across the gap along q_z at q_xy = 0
-                interpolated_img[i, start:end] = np.interp(
-                    np.arange(start, end),
-                    [start - 1, end],
-                    [img[i, start - 1], img[i, end]]
-                )
-
-        return interpolated_img
-
-    def handle_interpolation(self, img, edge_method='Sobel', threshold=0.1):
-        edge_img = self.edge_detection(img, method=edge_method)
-        gaps = self.classify_gaps(edge_img)
-        return self.interpolate_gaps(img, gaps, threshold)
 
 ## --- PEAK FINDING ALGORITHM ---- ##
     # (STEP 1) Normalization: The input DataArray is normalized to '1' at the maximum value.
@@ -1095,64 +943,6 @@ class WAXSAnalyze:
         
         return img_xr
 
-# -- Update class methods to use DataSet v. DataArray
-    '''
-    # (STEP 0) Append a boolean mask of null value sto the dataarray to overlay on the difference of Gaussians.
-    def append_mask_to_dataarray_DS(self, img_xr):
-        """
-        Appends a mask layer to the xarray DataArray to set zero-intensity regions to NaN.
-
-        Parameters:
-        - img_xr (xarray DataArray): The input 2D array containing intensity values.
-
-        Returns:
-        - img_ds (xarray DataSet): The modified DataSet with an additional mask layer.
-        """
-        zero_intensity_mask = (img_xr > 0).astype(int)  # Convert to boolean and then to int
-
-        # Create a DataSet from the original DataArray
-        img_ds = xr.Dataset({'original_data': img_xr})
-
-        # Add the mask as a new DataArray inside the DataSet
-        img_ds['mask'] = xr.DataArray(zero_intensity_mask.values, coords=img_xr.coords, dims=img_xr.dims)
-
-        return img_ds
-    
-    # (STEP 1) Normalization: The input DataArray is normalized to '1' at the maximum value.
-    def normalize_data_DS(self, img_xr):
-        return img_xr['original_data'] / np.nanmax(img_xr['original_data'].values)
-
-    # (STEP 2) Initial Peak Identification: Peaks are initially identified using the Difference of Gaussians (DoG).
-    def initial_peak_identification_DS(self, img_ds, sigma1, sigma2, threshold):
-        img_xr = img_ds['original_data']
-        img_smooth1 = gaussian_filter(img_xr.fillna(0).values, sigma=sigma1)
-        img_smooth2 = gaussian_filter(img_xr.fillna(0).values, sigma=sigma2)
-        DoG = img_smooth1 - img_smooth2  # Difference of Gaussians Value
-        
-        # Apply NaN mask to DoG using the mask attribute if present
-        mask = img_xr.attrs.get('mask', None)
-        if mask is not None:
-            maskedDoG = np.where(mask == 0, np.nan, DoG)
-        else:
-            maskedDoG = DoG
-            
-        self.DoG = xr.DataArray(DoG, coords=img_xr.coords, dims=img_xr.dims)
-        self.maskedDoG = xr.DataArray(maskedDoG, coords=img_xr.coords, dims=img_xr.dims)
-        img_ds['DoG'] = self.DoG
-        img_ds['maskedDoG'] = self.maskedDoG
-        
-        return img_ds
-
-    # (STEP 3) Edge Case Handling: Peaks at the edges or interfaces of data/no data regions are discarded or reassessed.
-    def handle_edge_cases(self, img_ds, initial_peaks):
-        img_xr = img_ds['original_data']
-        edge_mask = np.isnan(gaussian_filter(img_xr.fillna(0).values, sigma=1))
-        initial_peaks[edge_mask] = np.nan
-
-        # return img_ds
-        return initial_peaks
-    '''
-    
     def find_peaks_DoG_DS(self, img_xr, sigma1=1.0, sigma2=2.0, threshold=0.006, clustering_method='DBSCAN', eps=1, min_samples=2, k=3, radius=5):
         """
         Find peaks in a 2D array using the Difference of Gaussians (DoG) method.
@@ -1221,31 +1011,377 @@ class WAXSAnalyze:
         # Return the DataSet instead of DataArray
         return output_ds
 
-##########################################################################################
-## -- PSEUDOCODE LOGIC SEGMENT -- ##
-# This will normalize the image, calculate SNR, generate random points,
-# perform adaptive gradient ascent to find peaks, group them, and visualize them.
+class PeakSearch:
+    def __init__(self, img_xr) -> None:
+        self.img_xr = img_xr # Accepts an input DataArray
+        self.img_ds = self.normalize_data() # Image DataSet (XArray)
+            # Must convert DataArray into DataSet
+        
+        self.DoG = None # Difference of Gaussians (initialization)
+        self.mask = None # Overlay mask (initialization)
+        self.maskedDoG = None # Masked difference of Gaussians
 
-    # Normalize Intensity
-    # Filter (Gaussian Noise)
-    # Singular Value Decomposition (SVD) to remove noise and reconstruct peaks.
-    # Find Peaks (Monte Carlo - Momentum Gradient Ascent)
-    # Group Peak Points/Bin Peaks
-        # Manual Regrouping Option
-    # Tabulate Coordinates & Intensity of Peaks
-        # Store Normalization, Filtering, SVD Compression, Search Algorithm (neighborhood) and Peak Position Data as a .json
+        pass
+
+    # (STEP 0) Append a boolean mask of null value sto the dataarray to overlay on the difference of Gaussians.
+    def append_mask_to_dataarray_DS(self, img_xr):
+        """
+        Appends a mask layer to the xarray DataArray to set zero-intensity regions to NaN.
+
+        Parameters:
+        - img_xr (xarray DataArray): The input 2D array containing intensity values.
+
+        Returns:
+        - img_ds (xarray DataSet): The modified DataSet with an additional mask layer.
+        """
+        zero_intensity_mask = (img_xr > 0).astype(int)  # Convert to boolean and then to int
+
+        # Create a DataSet from the original DataArray
+        img_ds = xr.Dataset({'original_data': img_xr})
+
+        # Add the mask as a new DataArray inside the DataSet
+        img_ds['mask'] = xr.DataArray(zero_intensity_mask.values, coords=img_xr.coords, dims=img_xr.dims)
+
+        return img_ds
     
-    # -- Experiment Class
-    # Predictive Algorithm for 'Best Initial Guess'
-        # Input constraints on lattice parameters
-        # Look for and tabulate multiples of peaks in q_xy 
-        # Look for and tabulate multiples of peaks in q_z
-        # Provide best guess with confidence and error for the lattice constants
-        # Select set of peaks to evaluate sigma values for azimuthal smearing
-    # Load CIFs into DiffSim object
-    # Load 'Best Initial Guess' to match appropriate CIF and orientation parameters
-    # Simulate Bragg Peak Positions in CIFs (no intensity)
-        # Load possible CIFs to test against a, b, c, alpha, beta, gamma values
-            # Comparator Bragg Peak Simulation (Compute Crystal)
-        # Best match for position, simulate intensities and smearing from initial guesses.
-            # diffraction .py
+    # (STEP 1) Normalization: The input DataArray is normalized to '1' at the maximum value.
+    def normalize_data(self, img_xr):
+        return img_xr['original_data'] / np.nanmax(img_xr['original_data'].values)
+    
+        # (STEP 2) Initial Peak Identification: Peaks are initially identified using the Difference of Gaussians (DoG).
+    def initial_peak_identification(self, img_ds, sigma1, sigma2, threshold):
+        img_xr = img_ds['original_data']
+        img_smooth1 = gaussian_filter(img_xr.fillna(0).values, sigma=sigma1)
+        img_smooth2 = gaussian_filter(img_xr.fillna(0).values, sigma=sigma2)
+        DoG = img_smooth1 - img_smooth2  # Difference of Gaussians Value
+        
+        # Apply NaN mask to DoG using the mask attribute if present
+        mask = img_xr.attrs.get('mask', None)
+        if mask is not None:
+            maskedDoG = np.where(mask == 0, np.nan, DoG)
+        else:
+            maskedDoG = DoG
+            
+        self.DoG = xr.DataArray(DoG, coords=img_xr.coords, dims=img_xr.dims)
+        self.maskedDoG = xr.DataArray(maskedDoG, coords=img_xr.coords, dims=img_xr.dims)
+        img_ds['DoG'] = self.DoG
+        img_ds['maskedDoG'] = self.maskedDoG
+        
+        return img_ds
+
+    # (STEP 3) Edge Case Handling: Peaks at the edges or interfaces of data/no data regions are discarded or reassessed.
+    def handle_edge_cases(self, img_ds, initial_peaks):
+        img_xr = img_ds['original_data']
+        edge_mask = np.isnan(gaussian_filter(img_xr.fillna(0).values, sigma=1))
+        initial_peaks[edge_mask] = np.nan
+
+        # return img_ds
+        return initial_peaks
+    
+## --- IMAGE INTERPOLATION  --- ##
+class GapInfo:
+    def __init__(self, start, end, length):
+        self.start = start
+        self.end = end
+        self.length = length
+
+class ImageInterpolator:
+    def __init__(self):
+        pass
+
+    def simple_interpolate(self, img, direction="vertical", method="linear"):
+        
+            if direction not in ["vertical", "horizontal"]:
+                raise ValueError(f"Invalid direction. Expected 'vertical' or 'horizontal', got {direction}.")
+            
+            if method not in ["linear", "nearest", "zero", "slinear", "quadratic", "cubic",
+                            "polynomial", "barycentric", "krog", "pchip", "spline", "akima"]:
+                raise ValueError(f"Invalid method. Got {method}.")
+            
+            # coords = list(img.coords.keys())
+            coords = img.coords
+            img = img.where(img > 0, np.nan)
+            if direction == "vertical":
+                # img = img.interp({coords[0]: img[coords[0]].values}, method=method)
+                coord_label = list(coords.keys())[1]  # Assuming the vertical coordinate label is the second key
+                img_interp = img.interpolate_na(dim=coord_label, method=method)
+            else:
+                # img = img.interp({coords[1]: img[coords[1]].values}, method=method)
+                coord_label = list(coords.keys())[0]  # Assuming the horizontal coordinate label is the first key
+                img_interp = img.interpolate_na(dim=coord_label, method=method)
+                
+            return img_interp
+
+    @staticmethod
+    def linear_interpolate(img, direction):
+        """
+        Perform linear interpolation using xarray's built-in function.
+
+        Parameters:
+        - img (xarray.DataArray): The image data in xarray format.
+        - direction (str): Direction of interpolation, either 'vertical' or 'horizontal'.
+
+        Returns:
+        - xarray.DataArray: Interpolated image.
+        """
+        coords = img.coords
+        img = img.where(img > 0, np.nan)
+        if direction == 'vertical':
+            coord_label = list(coords.keys())[1]  # Assuming the vertical coordinate label is the second key
+            img_interp = img.interpolate_na(dim=coord_label, method='linear')
+        elif direction == 'horizontal':
+            coord_label = list(coords.keys())[0]  # Assuming the horizontal coordinate label is the first key
+            img_interp = img.interpolate_na(dim=coord_label, method='linear')
+        else:
+            raise ValueError("Invalid direction. Choose either 'vertical' or 'horizontal'.")
+        
+        return img_interp
+    
+    def save_dataarray_to_netcdf(self, dataarray, filename):
+        dataarray.to_netcdf(filename)
+
+    def find_gaps(self, img):
+        gap_indices = np.argwhere(np.isnan(img.values))
+        if len(gap_indices) == 0:
+            return None, None
+
+        vertical_gaps = defaultdict(list)
+        horizontal_gaps = defaultdict(list)
+
+        visited = set()
+
+        for x, y in gap_indices:
+            # Skip if this point is already part of another gap
+            if (x, y) in visited:
+                continue
+
+            # Check vertical gaps
+            if x > 0 and x < img.shape[0] - 1:
+                if not np.isnan(img.values[x - 1, y]):
+                    start_x = x
+                    end_x = x
+                    while end_x < img.shape[0] - 1 and np.isnan(img.values[end_x, y]):
+                        visited.add((end_x, y))
+                        end_x += 1
+                    if not np.isnan(img.values[end_x, y]):
+                        length = end_x - start_x
+                        vertical_gaps[length].append(GapInfo(start=(start_x, y), end=(end_x, y), length=length))
+
+            # Check horizontal gaps
+            if y > 0 and y < img.shape[1] - 1:
+                if not np.isnan(img.values[x, y - 1]):
+                    start_y = y
+                    end_y = y
+                    while end_y < img.shape[1] - 1 and np.isnan(img.values[x, end_y]):
+                        visited.add((x, end_y))
+                        end_y += 1
+                    if not np.isnan(img.values[x, end_y]):
+                        length = end_y - start_y
+                        horizontal_gaps[length].append(GapInfo(start=(x, start_y), end=(x, end_y), length=length))
+
+        return vertical_gaps, horizontal_gaps
+
+    def fill_smallest_gaps(self, img, vertical_gaps, horizontal_gaps):
+        filled = False
+
+        if vertical_gaps:
+            min_vertical_length = min(vertical_gaps.keys())
+            for gap_info in vertical_gaps[min_vertical_length]:
+                start_x, start_y = gap_info.start
+                end_x, end_y = gap_info.end
+
+                top_neighbor = img.values[start_x - 1, start_y] if not np.isnan(img.values[start_x - 1, start_y]) else 0
+                bottom_neighbor = img.values[end_x, end_y] if not np.isnan(img.values[end_x, end_y]) else 0
+                fill_value = (top_neighbor + bottom_neighbor) / 2
+                img.values[start_x:end_x, start_y] = fill_value
+                filled = True
+
+        if horizontal_gaps:
+            min_horizontal_length = min(horizontal_gaps.keys())
+            for gap_info in horizontal_gaps[min_horizontal_length]:
+                start_x, start_y = gap_info.start
+                end_x, end_y = gap_info.end
+
+                left_neighbor = img.values[start_x, start_y - 1] if not np.isnan(img.values[start_x, start_y - 1]) else 0
+                right_neighbor = img.values[end_x, end_y] if not np.isnan(img.values[end_x, end_y]) else 0
+                fill_value = (left_neighbor + right_neighbor) / 2
+                img.values[start_x, start_y:end_y] = fill_value
+                filled = True
+
+        return filled
+
+    def patch_interpolate(self, img):
+        iteration_count = 0
+        img = img.where(img > 0, np.nan)
+
+        while True:
+            vertical_gaps, horizontal_gaps = self.find_gaps(img)
+            if vertical_gaps is None and horizontal_gaps is None:
+                break
+            min_vertical_length = min(vertical_gaps.keys()) if vertical_gaps else float('inf')
+            min_horizontal_length = min(horizontal_gaps.keys()) if horizontal_gaps else float('inf')
+            if min_vertical_length == float('inf') and min_horizontal_length == float('inf'):
+                break
+            filled = self.fill_smallest_gaps(img, vertical_gaps, horizontal_gaps)
+            if not filled:
+                break
+            iteration_count += 1
+            clear_output(wait=True)
+            print(f"Iteration {iteration_count}: Smallest gap size = min({min_vertical_length}, {min_horizontal_length})")
+
+        img = img.where(~np.isnan(img), 0)
+        return img
+
+## --- Custom-Built Interpolation Methods ---- ##
+    def brute_force_interpolation(self, data_array, pixelthreshold_range, step_size):
+        new_data = data_array.copy(deep=True)
+        
+        # Using numpy's arange to create a float-compatible range
+        for pc in np.arange(pixelthreshold_range[0], pixelthreshold_range[1] + step_size, step_size):
+            for axis in data_array.dims:
+                other_axis = [dim for dim in data_array.dims if dim != axis][0]
+                
+                for i in range(len(data_array[other_axis].values)):
+                    intensity_values = data_array.isel({other_axis: i}).values
+                    start_gap = None
+                    gap_length = 0
+
+                    for j in range(len(intensity_values)):
+                        if np.isnan(intensity_values[j]) or intensity_values[j] == 0:
+                            if start_gap is None and j > 0:
+                                start_gap = j - 1
+                            gap_length += 1
+                        else:
+                            if start_gap is not None:
+                                end_gap = j
+                                if 0 < gap_length <= pc and end_gap < len(intensity_values) - 1:
+                                    interp_values = np.linspace(intensity_values[start_gap], intensity_values[end_gap], gap_length + 2)
+                                    if len(interp_values[1:-1]) == end_gap - start_gap - 1:
+                                        new_data.isel({other_axis: i}).values[start_gap + 1:end_gap] = interp_values[1:-1]
+
+                                start_gap = None
+                                gap_length = 0
+                        
+        return new_data
+
+    @staticmethod
+    def gaussian(x, a, b, c):
+        return a * np.exp(-((x - b)**2) / (2 * c**2))
+
+    def edge_detection(self, img, method='sobel'):
+        if method == 'sobel':
+            edge_img = sobel(img.values)
+        elif method == 'canny':
+            edge_img = canny(img.values)
+        else:
+            raise ValueError("Invalid edge detection method.")
+        
+        # Define a kernel to check for adjacent zero-valued pixels
+        kernel = np.array([[1, 1, 1],
+                        [1, 0, 1],
+                        [1, 1, 1]])
+        
+        # Convolve the edge image with the kernel
+        zero_adjacency = convolve2d(edge_img, kernel, mode='same')
+        
+        # Filter out edge pixels that are not adjacent to zero-valued pixels
+        filtered_edge_img = edge_img * (zero_adjacency > 0)
+        
+        return filtered_edge_img
+
+    def classify_gaps(self, edge_img, tolerance = 5, padding = 5):
+        # Initialize gap information
+        gaps = {'horizontal': [], 'vertical': [], 'missing_wedge': []}
+        n_rows, n_cols = edge_img.shape
+        
+        # Loop through rows and columns to identify gaps
+        for i, row in enumerate(edge_img):
+            gap_start = None
+            for j, pixel in enumerate(row):
+                if pixel == 0 and gap_start is None:
+                    gap_start = j
+                elif pixel != 0 and gap_start is not None:
+                    gaps['horizontal'].append((i, gap_start, j))
+                    gap_start = None
+
+        for i, col in enumerate(edge_img.T):
+            gap_start = None
+            for j, pixel in enumerate(col):
+                if pixel == 0 and gap_start is None:
+                    gap_start = j
+                elif pixel != 0 and gap_start is not None:
+                    gaps['vertical'].append((i, gap_start, j))
+                    gap_start = None
+        
+        # Identify potential missing wedges (gaps centered at q_z = 0)
+        center = edge_img.shape[0] // 2
+        # tolerance = 5  # Adjust as needed
+        for i, start, end in gaps['horizontal']:
+            if abs(i - center) < tolerance:
+                gaps['missing_wedge'].append((i, start, end))
+
+        # Curvature checking logic
+        for direction, gap_list in gaps.items():
+            new_gap_list = []
+            for gap in gap_list:
+                # padding = 5  # Default padding for curvature check
+                
+                if direction == 'horizontal':
+                    start = max(gap[1] - padding, 0)
+                    end = min(gap[2] + padding, n_cols)
+                    surrounding_pixels = edge_img[gap[0], start:end]
+                else:
+                    start = max(gap[1] - padding, 0)
+                    end = min(gap[2] + padding, n_rows)
+                    surrounding_pixels = edge_img[start:end, gap[0]]
+
+                p = Polynomial.fit(np.arange(len(surrounding_pixels)), surrounding_pixels, 2)
+                
+                # Check curvature. You may adjust the tolerance.
+                if len(p.convert().coef) > 2 and abs(p.convert().coef[2]) > 1e-5:
+                    new_gap_list.append(gap)
+
+            gaps[direction] = new_gap_list
+
+        return gaps
+
+    def interpolate_gaps(self, img, gaps, threshold=0.1):
+        interpolated_img = img.copy()
+
+        # Horizontal interpolation
+        for i, start, end in gaps['horizontal']:
+            if end - start < img.shape[1] * threshold:
+                interpolated_img[i, start:end] = np.interp(
+                    np.arange(start, end),
+                    [start - 1, end],
+                    [img[i, start - 1], img[i, end]]
+                )
+
+        # Vertical interpolation
+        for i, start, end in gaps['vertical']:
+            interpolated_img[start:end, i] = np.interp(
+                np.arange(start, end),
+                [start - 1, end],
+                [img[start - 1, i], img[end, i]]
+            )
+
+        # Missing wedge interpolation logic
+        # Identify potential missing wedges (gaps centered at q_z = 0)
+        potential_wedges = [gap for gap in gaps['horizontal'] if abs(gap[0] - img.shape[0] // 2) < 5]
+
+        for i, start, end in potential_wedges:
+            # Check if the gap size is below the threshold
+            if end - start < img.shape[1] * threshold:
+                # Interpolate across the gap along q_z at q_xy = 0
+                interpolated_img[i, start:end] = np.interp(
+                    np.arange(start, end),
+                    [start - 1, end],
+                    [img[i, start - 1], img[i, end]]
+                )
+
+        return interpolated_img
+
+    def handle_interpolation(self, img, edge_method='Sobel', threshold=0.1):
+        edge_img = self.edge_detection(img, method=edge_method)
+        gaps = self.classify_gaps(edge_img)
+        return self.interpolate_gaps(img, gaps, threshold)

@@ -1,9 +1,145 @@
-    '''
+##########################################################################################
+## -- PSEUDOCODE LOGIC SEGMENT -- ##
+# This will normalize the image, calculate SNR, generate random points,
+# perform adaptive gradient ascent to find peaks, group them, and visualize them.
+
+    # Normalize Intensity
+    # Filter (Gaussian Noise)
+    # Singular Value Decomposition (SVD) to remove noise and reconstruct peaks.
+    # Find Peaks (Monte Carlo - Momentum Gradient Ascent)
+    # Group Peak Points/Bin Peaks
+        # Manual Regrouping Option
+    # Tabulate Coordinates & Intensity of Peaks
+        # Store Normalization, Filtering, SVD Compression, Search Algorithm (neighborhood) and Peak Position Data as a .json
+    
+    # -- Experiment Class
+    # Predictive Algorithm for 'Best Initial Guess'
+        # Input constraints on lattice parameters
+        # Look for and tabulate multiples of peaks in q_xy 
+        # Look for and tabulate multiples of peaks in q_z
+        # Provide best guess with confidence and error for the lattice constants
+        # Select set of peaks to evaluate sigma values for azimuthal smearing
+    # Load CIFs into DiffSim object
+    # Load 'Best Initial Guess' to match appropriate CIF and orientation parameters
+    # Simulate Bragg Peak Positions in CIFs (no intensity)
+        # Load possible CIFs to test against a, b, c, alpha, beta, gamma values
+            # Comparator Bragg Peak Simulation (Compute Crystal)
+        # Best match for position, simulate intensities and smearing from initial guesses.
+            # diffraction .py
+   
+   '''
     # ATTRIBUTES:
         # self.caked_data_np, self.recip_data_np, self.qz_np, self.qxy_np, self.chi_np, self.qr_np = None, None, None, None, None, None # datatypes: numpy arrays
         # self.peak_positions_pixel = None
         # self.peak_positions_coords = None
         # self.apply_detector_corrections()
+    '''
+
+    '''
+        def find_and_sort_gaps(self, img):
+        """
+        Find and sort gaps based on their length. Both horizontal and vertical gaps are considered.
+        """
+        gap_indices = np.argwhere(np.isnan(img.values))
+        if len(gap_indices) == 0:
+            return None
+
+        vertical_gaps = {}
+        horizontal_gaps = {}
+
+        for x, y in gap_indices:
+            # Check vertical gaps
+            length = 0
+            temp_y = y
+            while temp_y < img.shape[1] and np.isnan(img.values[x, temp_y]):
+                length += 1
+                temp_y += 1
+
+            if length > 0:
+                vertical_gaps[(x, y)] = length
+
+            # Check horizontal gaps
+            length = 0
+            temp_x = x
+            while temp_x < img.shape[0] and np.isnan(img.values[temp_x, y]):
+                length += 1
+                temp_x += 1
+
+            if length > 0:
+                horizontal_gaps[(x, y)] = length
+
+        # Sort gaps based on their length
+        sorted_vertical_gaps = sorted(vertical_gaps.items(), key=lambda x: x[1])
+        sorted_horizontal_gaps = sorted(horizontal_gaps.items(), key=lambda x: x[1])
+
+        return sorted_vertical_gaps, sorted_horizontal_gaps
+
+    def fill_smallest_gaps(self, img, sorted_vertical_gaps, sorted_horizontal_gaps):
+        """
+        Fill the smallest gaps in both vertical and horizontal directions.
+        """
+        if sorted_vertical_gaps:
+            smallest_vertical_gap = sorted_vertical_gaps[0]
+            start_x, start_y = smallest_vertical_gap[0]
+            length = smallest_vertical_gap[1]
+
+            top_neighbor = img.values[start_x - 1, start_y] if start_x > 0 else 0
+            bottom_neighbor = img.values[start_x + length, start_y] if start_x + length < img.shape[0] else 0
+
+            fill_value = (top_neighbor + bottom_neighbor) / 2
+            img.values[start_x:start_x+length, start_y] = fill_value
+
+        if sorted_horizontal_gaps:
+            smallest_horizontal_gap = sorted_horizontal_gaps[0]
+            start_x, start_y = smallest_horizontal_gap[0]
+            length = smallest_horizontal_gap[1]
+
+            left_neighbor = img.values[start_x, start_y - 1] if start_y > 0 else 0
+            right_neighbor = img.values[start_x, start_y + length] if start_y + length < img.shape[1] else 0
+
+            fill_value = (left_neighbor + right_neighbor) / 2
+            img.values[start_x, start_y:start_y+length] = fill_value
+
+    def fill_gaps(self, img):
+        """
+        Recursively fill gaps in the image using linear interpolation, focusing on the smallest gaps first.
+        """
+        processed_gaps = set()  # To keep track of gaps that have been processed
+        
+        while True:
+            sorted_gaps = self.find_and_sort_gaps(img)
+            if sorted_gaps is None:
+                break
+
+            sorted_vertical_gaps, sorted_horizontal_gaps = sorted_gaps
+
+            # Fill the smallest vertical gap
+            for gap_start, length in sorted_vertical_gaps:
+                if gap_start not in processed_gaps:
+                    start_x, start_y = gap_start
+
+                    top_neighbor = img.values[start_x - 1, start_y] if start_x > 0 else 0
+                    bottom_neighbor = img.values[start_x + length, start_y] if start_x + length < img.shape[0] else 0
+
+                    fill_value = (top_neighbor + bottom_neighbor) / 2
+                    img.values[start_x:start_x + length, start_y] = fill_value
+
+                    processed_gaps.add(gap_start)
+                    break
+
+            # Fill the smallest horizontal gap
+            for gap_start, length in sorted_horizontal_gaps:
+                if gap_start not in processed_gaps:
+                    start_x, start_y = gap_start
+
+                    left_neighbor = img.values[start_x, start_y - 1] if start_y > 0 else 0
+                    right_neighbor = img.values[start_x, start_y + length] if start_y + length < img.shape[1] else 0
+
+                    fill_value = (left_neighbor + right_neighbor) / 2
+                    img.values[start_x, start_y:start_y + length] = fill_value
+
+                    processed_gaps.add(gap_start)
+                    break
     '''
 
     '''
