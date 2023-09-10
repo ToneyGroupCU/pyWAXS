@@ -32,11 +32,12 @@ from collections import Counter
 from collections import namedtuple
 from IPython.display import clear_output
 from typing import Optional
+import gc
 
 # - Custom Imports
 from WAXSTransform import WAXSTransform
 
-class WAXSAnalyze:
+class WAXSReduce:
     def __init__(self, 
                  poniPath: Union[str, pathlib.Path] = None, 
                  maskPath: Union[str, pathlib.Path, np.ndarray]  = None,
@@ -57,7 +58,7 @@ class WAXSAnalyze:
         Description: Initialize instance with metadata key list. Default is an empty list.
         """
     
-        # - Path Information
+        # -- PATH INFORMATION -- ##
         self.basePath = None # datatype: 'str' or pathlib variable, 'root_folder' basePath used throughout the class methods to build additional paths.
         self.poniPath = poniPath # datatype: 'str' or pathlib variable, PONI File Path ('.poni')
         self.maskPath = maskPath # datatype: 'str' or pathlib variable, MASK File Path ('.edf' or '.json')
@@ -65,11 +66,11 @@ class WAXSAnalyze:
         self.inplane_config = inplane_config # datatype: 'str', in-plane scattering axes label
         self.energy = energy # datatype: float, energy of your X-rays in keV
 
-        # - Metadata Attributes
+        # -- METADATA ATTRIBUTES -- ##
         self.metadata_keylist = metadata_keylist # datatype: list, 'md_naming_scheme'
         self.attribute_dict = None # datatype: dictionary, 'sample_dict'
 
-        # - TIFF Image Data
+        # -- TIFF IMAGE DATA -- ##
         self.rawtiff_np = None # datatype: numpy array, RAW TIFF (numpy)
         self.rawtiff_xr = None # datatype: xarray DataArray, RAW TIFF (xarray)
         
@@ -96,7 +97,7 @@ class WAXSAnalyze:
         self.cakedtiff_xr = None # datatype: xarray DataArray, Caked Space Corrected TIFF (xarray)
         self.cakedtiff_sinchi_xr = None # datatype: xarray DataArray, Caked Space w/ Sin Chi Correction TIFF (xarray)
 
-        # - Initialize GIXSTransform() object
+        # -- Initialize GIXSTransform() object -- #3
         self.GIXSTransformObj = self.detCorrObj() # Create Detector Object
         self.apply_image_corrections() # Apply Image Corrections
         
@@ -105,8 +106,9 @@ class WAXSAnalyze:
         self.normalized_img = None # Store Normalized Image
         self.snrtemp = None # Temporary signal-to-noise ratio 
 
-        self.DoG = None # Difference of Gaussians 
-        self.maskedDoG = None # masked difference of Gaussians
+        # -- Additional Class Attributes -- ##
+        # self.DoG = None # Difference of Gaussians 
+        # self.maskedDoG = None # masked difference of Gaussians
 
 ## --- DATA LOADING & METADATA EXTRACTION --- ##
     # -- Image Loading
@@ -138,6 +140,9 @@ class WAXSAnalyze:
             'pix_x': self.rawtiff_xr.pix_x.data,
             'pix_y': self.rawtiff_xr.pix_y.data
         })
+
+    def loadMultiImage(self):
+        pass
 
     # -- Metadata Loading
     def loadMetaData(self, tiffPath, delim='_'):
@@ -231,7 +236,7 @@ class WAXSAnalyze:
         self.GIXSTransformObj = self.detCorrObj()
         self.loadSingleImage(self.tiffPath)
 
-## --- RAW IMAGE CORRECTIONS --- ##
+## --- IMAGE PROCESSING (REQUIRED) --- ##
     # -- Apply Image Corrections
     def detCorrObj(self):
         """
@@ -279,7 +284,238 @@ class WAXSAnalyze:
         self.chi_np = caked_da['chi'].data
         self.qr_np = caked_da['qr'].data
 
-## --- IMAGE PLOTTING --- ##
+## --- IMAGE PROCESSING (OPTIONAL) --- ##
+    # -- sin(chi) correction applied to a caked image
+    def sinchi_corr(self, chicorr=True, qsqr=False):
+
+        if not chicorr and qsqr:
+            raise ValueError('chicorr must be enabled for qsqr correction to be applied. This will be updated in the future.')
+        
+        # Initialize original attributes
+        original_attrs = self.cakedtiff_xr.attrs.copy()
+
+        # Apply sin(chi) correction if chicorr is True
+        if chicorr:
+            sinchi_mask = np.sin(np.radians(np.abs(self.cakedtiff_xr.chi)))
+            self.cakedtiff_sinchi_xr = self.cakedtiff_xr * sinchi_mask
+            self.cakedtiff_sinchi_xr.attrs.update(original_attrs)
+            self.cakedtiff_sinchi_xr.attrs['sinchi'] = True
+            self.cakedtiff_sinchi_xr.attrs['qsqr'] = False
+
+            # Apply qr^2 scaling if qsqr is True
+            if qsqr:
+                self.cakedtiff_sinchi_xr *= self.cakedtiff_sinchi_xr.qr  # Assuming 'qr' is a data variable
+                self.cakedtiff_sinchi_xr.attrs['qsqr'] = True
+
+        return self.cakedtiff_sinchi_xr
+
+    # -- Normalize the image.
+    def normalize_image(self, img=None, normalizerecip=False):
+        # Check for invalid or incompatible types
+        if img is None:
+            if self.reciptiff_xr is None:
+                raise ValueError("Reciprocal space image data is not available.")
+            img = self.reciptiff_xr
+
+        if not isinstance(img, (np.ndarray, xr.DataArray)):
+            raise ValueError("The input image is not of a compatible type.")
+
+        # Initialize original attributes
+        original_attrs = {}
+
+        # Handle xarray DataArray
+        if isinstance(img, xr.DataArray):
+            img_values = img.values
+            original_attrs = img.attrs.copy()
+            data_type = 'DataArray'
+        else:
+            img_values = img
+            data_type = 'numpy'
+
+        # Perform normalization
+        max_val = np.max(img_values)
+        if max_val <= 0:
+            raise ValueError("Image maximum intensity is zero or negative, cannot normalize.")
+
+        normalized_img_values = img_values / max_val
+
+        # Find the coordinates of the maximum intensity pixel
+        max_coords = np.unravel_index(np.argmax(img_values), img_values.shape)
+        if isinstance(img, xr.DataArray):
+            max_y = img.coords[img.dims[0]][max_coords[0]].values
+            max_x = img.coords[img.dims[1]][max_coords[1]].values
+        else:
+            max_x, max_y = max_coords
+
+        # Create xarray DataArray and set attributes
+        normalized_img = xr.DataArray(normalized_img_values, coords=img.coords if isinstance(img, xr.DataArray) else None, dims=img.dims if isinstance(img, xr.DataArray) else None)
+        normalized_img.attrs.update(original_attrs)
+        normalized_img.attrs['original_name'] = inspect.currentframe().f_back.f_locals.get('img', 'unknown')
+        normalized_img.attrs['original_type'] = data_type
+
+        # Save to class attribute
+        self.normalized_img = normalized_img
+
+        if normalizerecip:
+            self.reciptiff_xr.values = normalized_img_values
+            self.reciptiff_xr.attrs['normalized'] = True
+
+        return normalized_img, (max_x, max_y)
+
+    # -- Image Smoothing Algorithm
+    def smooth_image(self, img, method: str = 'gaussian', **kwargs) -> xr.DataArray:
+        """
+        Smooth the input image using the specified method and exclude zero-intensity regions.
+        
+        Parameters:
+            img (xr.DataArray or np.ndarray): Input image to be smoothed.
+            method (str): The smoothing method to use ('gaussian', 'bilateral', 'total_variation', 'anisotropic').
+            **kwargs: Additional parameters for the smoothing method.
+            
+        Returns:
+            xr.DataArray: Smoothed image with the same shape as the input.
+        """
+        
+        # Convert to xarray if input is a numpy array
+        if isinstance(img, np.ndarray):
+            img = xr.DataArray(img)
+            
+        # Create a mask to exclude zero-intensity regions
+        mask = img != 0
+        
+        # Backup original dtype
+        original_dtype = img.dtype
+        
+        if method == 'gaussian':
+            sigma = kwargs.get('sigma', 1)
+            smoothed = gaussian_filter(img.where(mask), sigma)
+        elif method == 'bilateral':
+            sigma_color = kwargs.get('sigma_color', 0.05)
+            sigma_spatial = kwargs.get('sigma_spatial', 15)
+            smoothed = denoise_bilateral(img.where(mask).values, sigma_color=sigma_color, sigma_spatial=sigma_spatial, multichannel=False)
+        elif method == 'total_variation':
+            weight = kwargs.get('weight', 0.1)
+            smoothed = denoise_tv_chambolle(img.where(mask).values, weight=weight)
+        elif method == 'anisotropic':
+            smoothed = img.where(mask).copy()
+        else:
+            raise ValueError("Invalid method. Choose from 'gaussian', 'bilateral', 'total_variation', 'anisotropic'.")
+        
+        # Reapply the original mask to set zero-intensity regions back to zero
+        smoothed = xr.DataArray(smoothed, coords=img.coords, dims=img.dims).where(mask)
+        
+        # Update the smoothed_img attribute
+        self.smoothed_img = smoothed.astype(original_dtype)
+        
+        return self.smoothed_img
+
+    # -- Image Folding Algorithm Modifying the fold_image method to keep the data from the longer quadrant and append it to the folded image.
+    def fold_image(self, data_array, fold_axis):
+        """
+        Method to fold image along a specified axis.
+        
+        Parameters:
+        - data_array (xarray DataArray): The DataArray to fold
+        - fold_axis (str): The axis along which to fold the image
+        
+        Returns:
+        - xarray DataArray: The folded image
+        """
+        # Filter data for fold_axis >= 0 and fold_axis <= 0
+        positive_data = data_array.where(data_array[fold_axis] >= 0, drop=True)
+        negative_data = data_array.where(data_array[fold_axis] <= 0, drop=True)
+        
+        # Reverse negative_data for easier comparison
+        negative_data = negative_data.reindex({fold_axis: negative_data[fold_axis][::-1]})
+        
+        # Find the maximum coordinate of the shorter quadrant (positive_data)
+        max_positive_coord = float(positive_data[fold_axis].max())
+        
+        # Find the equivalent coordinate in the negative_data
+        abs_diff = np.abs(negative_data[fold_axis].values + max_positive_coord)
+        
+        # Minimize the difference
+        min_diff_idx = np.argmin(abs_diff)
+        
+        # Check if the lengths are equivalent
+        len_pos = len(positive_data[fold_axis])
+        len_neg = len(negative_data[fold_axis][:min_diff_idx+1])
+        
+        if len_pos != len_neg:
+            # Adjust the coordinate range for negative_data
+            for i in range(1, 4):  # Check 3 neighbors
+                new_idx = min_diff_idx + i
+                len_neg = len(negative_data[fold_axis][:new_idx+1])
+                if len_pos == len_neg:
+                    min_diff_idx = new_idx
+                    break
+                    
+        # Crop the negative_data to match positive_data length
+        negative_data_cropped = negative_data.isel({fold_axis: slice(0, min_diff_idx+1)})
+        
+        # Prepare the new data array
+        new_data = xr.zeros_like(positive_data)
+        
+        # Fold the image
+        for i in range(len(positive_data[fold_axis])):
+            pos_val = positive_data.isel({fold_axis: i}).values
+            neg_val = negative_data_cropped.isel({fold_axis: i}).values
+            
+            # Pixel comparison and averaging or summing
+            new_data.values[i] = np.where(
+                (pos_val > 0) & (neg_val > 0), (pos_val + neg_val) / 2,
+                np.where((pos_val == 0) & (neg_val > 0), neg_val, pos_val)
+            )
+            
+        # Append residual data from the longer quadrant if exists
+        if len(negative_data[fold_axis]) > min_diff_idx+1:
+            residual_data = negative_data.isel({fold_axis: slice(min_diff_idx+1, None)})
+            residual_data[fold_axis] = np.abs(residual_data[fold_axis])
+            new_data = xr.concat([new_data, residual_data], dim=fold_axis)
+            
+        # Update data_array with the folded image
+        data_array = new_data.sortby(fold_axis)
+        
+        return data_array
+
+## --- CALCULATE IMAGE STATISICS --- ##
+    # -- Calculating Signal-to-Noise Ratio (Internal)
+    def calculate_SNR_for_class(self):
+        """
+        Calculate the Signal-to-Noise Ratio (SNR) for all xarray DataArrays stored as class attributes.
+        Saves the calculated SNR as an attribute of each xarray DataArray.
+        """
+        for attr_name in ['rawtiff_xr', 'reciptiff_xr', 'cakedtiff_xr']:
+            xarray_obj = getattr(self, attr_name, None)
+            if xarray_obj is not None:
+                mask = xarray_obj != 0
+                mean_val = np.mean(xarray_obj.where(mask).values)
+                std_val = np.std(xarray_obj.where(mask).values)
+                xarray_obj.attrs['snr'] = mean_val / std_val
+
+    # -- Calculating Signal-to-Noise Ratio (External)
+    def calculate_SNR(self, xarray_obj: xr.DataArray) -> float:
+        """
+        Calculate the Signal-to-Noise Ratio (SNR) for an input xarray DataArray.
+        
+        Parameters:
+            xarray_obj (xr.DataArray): Input xarray DataArray for SNR calculation.
+            
+        Returns:
+            float: Calculated SNR value.
+        """
+        if not isinstance(xarray_obj, xr.DataArray):
+            raise ValueError("Input must be an xarray DataArray.")
+            
+        mask = xarray_obj != 0
+        mean_val = np.mean(xarray_obj.where(mask).values)
+        std_val = np.std(xarray_obj.where(mask).values)
+        snr = mean_val / std_val
+        xarray_obj.attrs['snr'] = snr
+        self.snrtemp = snr
+        return xarray_obj
+    
+## --- 2D IMAGE PLOTTING --- ##
     # -- Display the RAW TIFF using XArray
     def rawdisplay_xr(self):
         plt.close('all')
@@ -365,719 +601,349 @@ class WAXSAnalyze:
         plt.colorbar()
         plt.show()
 
-## --- IMAGE CORRECTION - SIN(CHI) --- ##
-    def sinchi_corr(self, chicorr=True, qsqr=False):
-
-        if not chicorr and qsqr:
-            raise ValueError('chicorr must be enabled for qsqr correction to be applied. This will be updated in the future.')
-        
-        # Initialize original attributes
-        original_attrs = self.cakedtiff_xr.attrs.copy()
-
-        # Apply sin(chi) correction if chicorr is True
-        if chicorr:
-            sinchi_mask = np.sin(np.radians(np.abs(self.cakedtiff_xr.chi)))
-            self.cakedtiff_sinchi_xr = self.cakedtiff_xr * sinchi_mask
-            self.cakedtiff_sinchi_xr.attrs.update(original_attrs)
-            self.cakedtiff_sinchi_xr.attrs['sinchi'] = True
-            self.cakedtiff_sinchi_xr.attrs['qsqr'] = False
-
-            # Apply qr^2 scaling if qsqr is True
-            if qsqr:
-                self.cakedtiff_sinchi_xr *= self.cakedtiff_sinchi_xr.qr  # Assuming 'qr' is a data variable
-                self.cakedtiff_sinchi_xr.attrs['qsqr'] = True
-
-        return self.cakedtiff_sinchi_xr
-
-## --- IMAGE NORMALIZATION --- ##
-    # -- Normalize Image
-    def normalize_image(self, img=None, normalizerecip=False):
-        # Check for invalid or incompatible types
-        if img is None:
-            if self.reciptiff_xr is None:
-                raise ValueError("Reciprocal space image data is not available.")
-            img = self.reciptiff_xr
-
-        if not isinstance(img, (np.ndarray, xr.DataArray)):
-            raise ValueError("The input image is not of a compatible type.")
-
-        # Initialize original attributes
-        original_attrs = {}
-
-        # Handle xarray DataArray
-        if isinstance(img, xr.DataArray):
-            img_values = img.values
-            original_attrs = img.attrs.copy()
-            data_type = 'DataArray'
+class Integration1D(WAXSReduce):
+    def __init__(self, waxs_instance=None):
+        if waxs_instance:
+            self.__dict__.update(waxs_instance.__dict__)
         else:
-            img_values = img
-            data_type = 'numpy'
+            super().__init__()
 
-        # Perform normalization
-        max_val = np.max(img_values)
-        if max_val <= 0:
-            raise ValueError("Image maximum intensity is zero or negative, cannot normalize.")
+        # -- 1D Image Processing Variables -- ##
+        # - Caked Image Azimuthal Integration
+        self.cakeslice1D_xr = None
+        self.chislice = []
+        self.qrslice = []
+        self.cakeslicesum = 'chi'
 
-        normalized_img_values = img_values / max_val
+        # - Boxcut Integration (qxy x qz)
+        self.boxcut1D_xr = None
+        self.qxyslice = []
+        self.qzslice = []
+        self.boxcutsum = 'qz'
 
-        # Find the coordinates of the maximum intensity pixel
-        max_coords = np.unravel_index(np.argmax(img_values), img_values.shape)
-        if isinstance(img, xr.DataArray):
-            max_y = img.coords[img.dims[0]][max_coords[0]].values
-            max_x = img.coords[img.dims[1]][max_coords[1]].values
-        else:
-            max_x, max_y = max_coords
+        # - Pole Figure Integration
+        self.pole_chislice = []
+        self.pole_qrslice = []
+        self.poleleveler = 'slinear'
 
-        # Create xarray DataArray and set attributes
-        normalized_img = xr.DataArray(normalized_img_values, coords=img.coords if isinstance(img, xr.DataArray) else None, dims=img.dims if isinstance(img, xr.DataArray) else None)
-        normalized_img.attrs.update(original_attrs)
-        normalized_img.attrs['original_name'] = inspect.currentframe().f_back.f_locals.get('img', 'unknown')
-        normalized_img.attrs['original_type'] = data_type
+        # - Reciprocal Space Map Azimuthal Integration
+        self.azimuth1D_xr = None
+        self.azi_chislice = []
+        self.azi_qrslice = []
+        self.azimuth1D_xr_sum = None
+        self.azimuth_mask = None
+        self.original_total_intensity = None
 
-        # Save to class attribute
-        self.normalized_img = normalized_img
-
-        if normalizerecip:
-            self.reciptiff_xr.values = normalized_img_values
-            self.reciptiff_xr.attrs['normalized'] = True
-
-        return normalized_img, (max_x, max_y)
-
-## --- IMAGE SMOOTHING --- ##
-    # -- Image Smoothing Algorithm
-    def smooth_image(self, img, method: str = 'gaussian', **kwargs) -> xr.DataArray:
-        """
-        Smooth the input image using the specified method and exclude zero-intensity regions.
-        
-        Parameters:
-            img (xr.DataArray or np.ndarray): Input image to be smoothed.
-            method (str): The smoothing method to use ('gaussian', 'bilateral', 'total_variation', 'anisotropic').
-            **kwargs: Additional parameters for the smoothing method.
+    def cakeslice1D(self, img, chislice = [-90, 90], qrslice = [0, 4], cakeslicesum = 'chi'):
+            """
+            Description: 
+            Takes an input xarray DataArray of a caked image. Performs a sum along either the 'chi' or 'qr' 
+            direction after slicing the DataArray based on the input range for 'chi' and 'qr'.
             
-        Returns:
-            xr.DataArray: Smoothed image with the same shape as the input.
-        """
-        
-        # Convert to xarray if input is a numpy array
-        if isinstance(img, np.ndarray):
-            img = xr.DataArray(img)
+            Variables:
+            - img: The input Xarray DataArray or DataSet. Should have 'chi' and 'qr' as coordinates.
+            - chislice: A list [chimin, chimax] defining the range of 'chi' values for slicing.
+            - qrslice: A list [qrmin, qrmax] defining the range of 'qr' values for slicing.
+            - cakeslicesum: A string specifying the direction along which to sum ('chi' or 'qr').
             
-        # Create a mask to exclude zero-intensity regions
-        mask = img != 0
-        
-        # Backup original dtype
-        original_dtype = img.dtype
-        
-        if method == 'gaussian':
-            sigma = kwargs.get('sigma', 1)
-            smoothed = gaussian_filter(img.where(mask), sigma)
-        elif method == 'bilateral':
-            sigma_color = kwargs.get('sigma_color', 0.05)
-            sigma_spatial = kwargs.get('sigma_spatial', 15)
-            smoothed = denoise_bilateral(img.where(mask).values, sigma_color=sigma_color, sigma_spatial=sigma_spatial, multichannel=False)
-        elif method == 'total_variation':
-            weight = kwargs.get('weight', 0.1)
-            smoothed = denoise_tv_chambolle(img.where(mask).values, weight=weight)
-        elif method == 'anisotropic':
-            smoothed = img.where(mask).copy()
-        else:
-            raise ValueError("Invalid method. Choose from 'gaussian', 'bilateral', 'total_variation', 'anisotropic'.")
-        
-        # Reapply the original mask to set zero-intensity regions back to zero
-        smoothed = xr.DataArray(smoothed, coords=img.coords, dims=img.dims).where(mask)
-        
-        # Update the smoothed_img attribute
-        self.smoothed_img = smoothed.astype(original_dtype)
-        
-        return self.smoothed_img
-
-## --- IMAGE FOLDING --- ##
-# Modifying the fold_image method to keep the data from the longer quadrant and append it to the folded image.
-    def fold_image(self, data_array, fold_axis):
-        """
-        Method to fold image along a specified axis.
-        
-        Parameters:
-        - data_array (xarray DataArray): The DataArray to fold
-        - fold_axis (str): The axis along which to fold the image
-        
-        Returns:
-        - xarray DataArray: The folded image
-        """
-        # Filter data for fold_axis >= 0 and fold_axis <= 0
-        positive_data = data_array.where(data_array[fold_axis] >= 0, drop=True)
-        negative_data = data_array.where(data_array[fold_axis] <= 0, drop=True)
-        
-        # Reverse negative_data for easier comparison
-        negative_data = negative_data.reindex({fold_axis: negative_data[fold_axis][::-1]})
-        
-        # Find the maximum coordinate of the shorter quadrant (positive_data)
-        max_positive_coord = float(positive_data[fold_axis].max())
-        
-        # Find the equivalent coordinate in the negative_data
-        abs_diff = np.abs(negative_data[fold_axis].values + max_positive_coord)
-        
-        # Minimize the difference
-        min_diff_idx = np.argmin(abs_diff)
-        
-        # Check if the lengths are equivalent
-        len_pos = len(positive_data[fold_axis])
-        len_neg = len(negative_data[fold_axis][:min_diff_idx+1])
-        
-        if len_pos != len_neg:
-            # Adjust the coordinate range for negative_data
-            for i in range(1, 4):  # Check 3 neighbors
-                new_idx = min_diff_idx + i
-                len_neg = len(negative_data[fold_axis][:new_idx+1])
-                if len_pos == len_neg:
-                    min_diff_idx = new_idx
-                    break
+            Attributes:
+            - self.cakeslicesum: Stores the direction along which the sum was performed.
+            - self.cakeslice1D: Stores the resulting 1D DataArray after slicing and summing.
+            
+            Output: 
+            Returns the 1D DataArray after slicing and summing, and stores it in self.cakeslice1D.
+            """
+            
+            # Check that cakeslicesum is either 'chi' or 'qr'
+            if cakeslicesum not in ['chi', 'qr']:
+                print("Invalid cakeslicesum value. Defaulting to 'chi'.")
+                cakeslicesum = 'chi'
+                
+            # Check if the necessary dimensions are present in the DataArray
+            chi_aliases = ['chi', 'Chi', 'CHI']
+            qr_aliases = ['qr', 'q_r', 'QR', 'Q_R', 'Qr', 'Q_r']
+            
+            chi_dim = None
+            qr_dim = None
+            
+            for dim in img.dims:
+                if dim.lower() in [alias.lower() for alias in chi_aliases]:
+                    chi_dim = dim
+                if dim.lower() in [alias.lower() for alias in qr_aliases]:
+                    qr_dim = dim
                     
-        # Crop the negative_data to match positive_data length
-        negative_data_cropped = negative_data.isel({fold_axis: slice(0, min_diff_idx+1)})
-        
-        # Prepare the new data array
-        new_data = xr.zeros_like(positive_data)
-        
-        # Fold the image
-        for i in range(len(positive_data[fold_axis])):
-            pos_val = positive_data.isel({fold_axis: i}).values
-            neg_val = negative_data_cropped.isel({fold_axis: i}).values
-            
-            # Pixel comparison and averaging or summing
-            new_data.values[i] = np.where(
-                (pos_val > 0) & (neg_val > 0), (pos_val + neg_val) / 2,
-                np.where((pos_val == 0) & (neg_val > 0), neg_val, pos_val)
-            )
-            
-        # Append residual data from the longer quadrant if exists
-        if len(negative_data[fold_axis]) > min_diff_idx+1:
-            residual_data = negative_data.isel({fold_axis: slice(min_diff_idx+1, None)})
-            residual_data[fold_axis] = np.abs(residual_data[fold_axis])
-            new_data = xr.concat([new_data, residual_data], dim=fold_axis)
-            
-        # Update data_array with the folded image
-        data_array = new_data.sortby(fold_axis)
-        
-        return data_array
+            if chi_dim is None or qr_dim is None:
+                raise ValueError("The input DataArray must contain dimensions corresponding to 'chi' and 'qr'.")
 
-## --- CALCULATE SIGNAL-to-NOISE  --- ##
-    # -- Calculating Signal-to-Noise Ratio (Internal)
-    def calculate_SNR_for_class(self):
+            self.cakeslicesum = cakeslicesum
+
+            # Extract the slice boundaries
+            qrmin, qrmax = qrslice
+            chimin, chimax = chislice
+
+            # Perform the slicing and summing
+            cakeslice1D_xr = img.sel({qr_dim: slice(qrmin, qrmax), chi_dim: slice(chimin, chimax)}).sum(cakeslicesum)
+
+            # Assign DataArray attributes
+            cakeslice1D_xr.attrs['qrmin'] = qrmin
+            cakeslice1D_xr.attrs['qrmax'] = qrmax
+            cakeslice1D_xr.attrs['chimin'] = chimin
+            cakeslice1D_xr.attrs['chimax'] = chimax
+            cakeslice1D_xr.attrs['sumdir'] = cakeslicesum
+
+            # Assign coordinate names
+            coord_name = qr_dim if cakeslicesum == chi_dim else chi_dim
+            cakeslice1D_xr = cakeslice1D_xr.rename({coord_name: 'intensity'})
+
+            # Save as a class attribute
+            self.cakeslice1D_xr = cakeslice1D_xr
+
+            return self.cakeslice1D_xr
+
+    def boxcut1D(self, img, qxyslice=[0, 2.5], qzslice=[0, 2.5], boxcutsum='qz'):
         """
-        Calculate the Signal-to-Noise Ratio (SNR) for all xarray DataArrays stored as class attributes.
-        Saves the calculated SNR as an attribute of each xarray DataArray.
-        """
-        for attr_name in ['rawtiff_xr', 'reciptiff_xr', 'cakedtiff_xr']:
-            xarray_obj = getattr(self, attr_name, None)
-            if xarray_obj is not None:
-                mask = xarray_obj != 0
-                mean_val = np.mean(xarray_obj.where(mask).values)
-                std_val = np.std(xarray_obj.where(mask).values)
-                xarray_obj.attrs['snr'] = mean_val / std_val
+        Description: 
+        Receives an input Xarray DataArray and performs a sum along either the 'qxy' or 'qz' direction
+        after slicing the DataArray based on the input range for 'qxy' and 'qz'. The method is flexible 
+        to different names for the 'qxy' dimension.
 
-    # -- Calculating Signal-to-Noise Ratio (External)
-    def calculate_SNR(self, xarray_obj: xr.DataArray) -> float:
+        Variables:
+        - img: Input Xarray DataArray. Should have 'qz' and optionally 'qxy', 'q_xy', 'q_para', 'q_perp' as coordinates.
+        - qxyslice: A list [qxymin, qxymax] defining the range of 'qxy' values for slicing.
+        - qzslice: A list [qzmin, qzmax] defining the range of 'qz' values for slicing.
+        - boxcutsum: A string specifying the direction along which to sum ('qxy' or 'qz').
+
+        Attributes:
+        - self.boxcut1D_xr: Stores the resulting 1D DataArray after slicing and summing.
+
+        Output: 
+        Returns the 1D DataArray after slicing and summing, and stores it in self.boxcut1D_xr.
         """
-        Calculate the Signal-to-Noise Ratio (SNR) for an input xarray DataArray.
+        # Check if boxcutsum is either 'qxy' or 'qz'
+        if boxcutsum not in ['qxy', 'qz']:
+            print("Invalid boxcutsum value. Defaulting to 'qz'.")
+            boxcutsum = 'qz'
+
+        # Normalize dimension names
+        qz_aliases = ['qz', 'q_z', 'QZ', 'Q_z', 'Q_Z']
+        qxy_aliases = ['qxy', 'q_xy', 'QXY', 'Qxy', 'Q_xy', 'Q_XY']
+
+        qz_dim = None
+        qxy_dim = None
+        for dim in img.dims:
+            if dim in qz_aliases:
+                qz_dim = dim
+            if dim in qxy_aliases:
+                qxy_dim = dim
+
+        if qz_dim is None:
+            raise ValueError("The input image must have 'qz' or an alias as a dimension.")
+        if qxy_dim is None:
+            raise ValueError("The input image must have 'qxy' or an alias as a dimension.")
+
+        # Align boxcutsum with the actual dimension name
+        if boxcutsum in qz_aliases:
+            boxcutsum = qz_dim
+        elif boxcutsum in qxy_aliases:
+            boxcutsum = qxy_dim
+
+        # Extract slice boundaries
+        qxymin, qxymax = qxyslice
+        qzmin, qzmax = qzslice
+
+        # Prepare slicing dictionary
+        slicing_dict = {qz_dim: slice(qzmin, qzmax), qxy_dim: slice(qxymin, qxymax)}
+
+        # Perform slicing and summing
+        boxcut1D_xr = img.sel(**slicing_dict).sum(boxcutsum)
+
+        # Assign DataArray attributes
+        boxcut1D_xr.attrs['qxymin'] = qxymin
+        boxcut1D_xr.attrs['qxymax'] = qxymax
+        boxcut1D_xr.attrs['qzmin'] = qzmin
+        boxcut1D_xr.attrs['qzmax'] = qzmax
+        boxcut1D_xr.attrs['sumdir'] = boxcutsum
+
+        # Assign coordinate names
+        coord_name = qxy_dim if boxcutsum == 'qz' else qz_dim
+        # Check if the dimension still exists after summing
+        if coord_name in boxcut1D_xr.dims:
+            boxcut1D_xr = boxcut1D_xr.rename({coord_name: 'intensity'})
+
+        # Save as a class attribute
+        self.boxcut1D_xr = boxcut1D_xr
+
+        return self.boxcut1D_xr
+
+    def polefig1D(self, img, pole_chislice, pole_qrslice, qrcenter=None, chicenter=0, poleleveler='linear'):
+        """
+        Description:
+            Generates a 1D pole figure to analyze the distribution of X-ray scattering intensity over a specified peak center in reciprocal space.
+            The method slices the input 2D data array based on the given ranges for 'qr' and 'chi' dimensions. Gaps in the 'qr' data are interpolated
+            using spline interpolation of order 1 ('slinear'). The method then sums or averages the intensity in the specified dimension ('qr' by default)
+            for each value in the opposing dimension ('chi'). Optionally, a linear background subtraction can be applied to the summed or averaged data.
+
+        Variables:
+            img (xr.DataArray): Input 2D Xarray DataArray containing the scattering intensity.
+            pole_chislice (tuple): Specifies the slice range for the 'chi' dimension, e.g., (-90, 90).
+            pole_qrslice (tuple): Specifies the slice range for the 'qr' dimension, e.g., (0.2, 3).
+            qrcenter (float, optional): Center value for 'qr' in the pole figure. Defaults to the midpoint of pole_qrslice.
+            chicenter (float, optional): Center value for 'chi' in the pole figure. Defaults to 0.
+            poleleveler (str, optional): Specifies the type of background leveling. Options are 'linear', 'average', or None. Defaults to 'linear'.
+
+        Attributes:
+            self.pole_chislice: Stores the 'chi' slice range.
+            self.pole_qrslice: Stores the 'qr' slice range.
+            self.poleleveler: Stores the type of background leveling applied.
+
+        Output:
+            pole_fig_da (xr.DataArray): 1D Xarray DataArray representing the pole figure. The DataArray includes attributes that store
+                                        the input slice ranges and the type of background leveling applied.
+            
+        Note:
+            Gaps in 'qr' are interpolated. Gaps in 'chi' are ignored.
+            The linear background fit is constrained to be below the actual intensity values.
+        """
         
-        Parameters:
-            xarray_obj (xr.DataArray): Input xarray DataArray for SNR calculation.
-            
-        Returns:
-            float: Calculated SNR value.
-        """
-        if not isinstance(xarray_obj, xr.DataArray):
-            raise ValueError("Input must be an xarray DataArray.")
-            
-        mask = xarray_obj != 0
-        mean_val = np.mean(xarray_obj.where(mask).values)
-        std_val = np.std(xarray_obj.where(mask).values)
-        snr = mean_val / std_val
-        xarray_obj.attrs['snr'] = snr
-        self.snrtemp = snr
-        return xarray_obj
-
-## --- PEAK FINDING ALGORITHM ---- ##
-    # (STEP 1) Normalization: The input DataArray is normalized to '1' at the maximum value.
-    def normalize_data(self, img_xr):
-        return img_xr / np.nanmax(img_xr.values)
-
-    # (STEP 2) Initial Peak Identification: Peaks are initially identified using the Difference of Gaussians (DoG).
-    def initial_peak_identification(self, img_xr, sigma1, sigma2, threshold):
-        img_smooth1 = gaussian_filter(img_xr.fillna(0).values, sigma=sigma1)
-        img_smooth2 = gaussian_filter(img_xr.fillna(0).values, sigma=sigma2)
-        DoG = img_smooth1 - img_smooth2 # Difference of Gaussians Value
-        self.DoG = DoG
-        return np.where(DoG >= threshold, DoG, np.nan)
-
-    # (STEP 3) Edge Case Handling: Peaks at the edges or interfaces of data/no data regions are discarded or reassessed.
-    def handle_edge_cases(self, img_xr, initial_peaks):
-        edge_mask = np.isnan(gaussian_filter(img_xr.fillna(0).values, sigma=1))
-        initial_peaks[edge_mask] = np.nan
-        return initial_peaks
-
-    # (STEP 4) Clustering Local Maxima: For multiple peaks found around a single local maxima, we use clustering (DBSCAN or HDBSCAN) to identify groups of localized peaks.
-    def cluster_local_maxima(self, initial_peaks, method='DBSCAN', eps=3, min_samples=2):
-        peak_coords = np.column_stack(np.where(~np.isnan(initial_peaks)))
-        if peak_coords.shape[0] > 0:
-            if method == 'DBSCAN':
-                clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(peak_coords)
-            elif method == 'HDBSCAN':
-                clustering = hdbscan.HDBSCAN(min_cluster_size=min_samples).fit(peak_coords)
-            else:
-                raise ValueError("Invalid clustering method. Choose either 'DBSCAN' or 'HDBSCAN'.")
-            
-            cluster_labels = clustering.labels_
-            # print("Unique cluster labels:", set(cluster_labels))
-
-            for cluster_id in set(cluster_labels):
-                if cluster_id == -1:
-                    continue
-                # coords_in_cluster = peak_coords[cluster_labels == cluster_id]
-                # max_coord = coords_in_cluster[np.argmax(initial_peaks[coords_in_cluster[:, 0], coords_in_cluster[:, 1]])]
-                # initial_peaks[coords_in_cluster[:, 0], coords_in_cluster[:, 1]] = np.nan
-                # initial_peaks[max_coord[0], max_coord[1]] = initial_peaks[max_coord[0], max_coord[1]]
-            
-                coords_in_cluster = peak_coords[cluster_labels == cluster_id]
+        # Check if the necessary dimensions are present in the DataArray
+        chi_aliases = ['chi', 'Chi', 'CHI']
+        qr_aliases = ['qr', 'q_r', 'QR', 'Q_R', 'Qr', 'Q_r']
+        
+        chi_dim = None
+        qr_dim = None
+        
+        for dim in img.dims:
+            if dim.lower() in [alias.lower() for alias in chi_aliases]:
+                chi_dim = dim
+            if dim.lower() in [alias.lower() for alias in qr_aliases]:
+                qr_dim = dim
                 
-                # Find the local maxima within the cluster instead of median
-                intensities = self.DoG[coords_in_cluster[:, 0], coords_in_cluster[:, 1]]
-                max_idx = np.argmax(intensities)
-                max_coord = coords_in_cluster[max_idx]
-                
-                # Nullify other peaks in the cluster
-                initial_peaks[coords_in_cluster[:, 0], coords_in_cluster[:, 1]] = np.nan
-                
-                # Store the local maxima
-                initial_peaks[max_coord[0], max_coord[1]] = self.DoG[max_coord[0], max_coord[1]]
+        if chi_dim is None or qr_dim is None:
+            raise ValueError("The input DataArray must contain dimensions corresponding to 'chi' and 'qr'.")
         
-        return initial_peaks
-    
-    # (STEP 5) Recentering Algorithm: Recenter peaks to the local maxima.
-    def recenter_peaks(self, peaks, k=3, radius=5):
-        """
-        Recenter peaks to the local maxima in their neighborhoods.
-        
-        Parameters:
-        - peaks (array): 2D array of peaks with x and y coordinates.
-        - k (int): Number of nearest neighbors to consider for recentering.
-        - radius (float): Radius within which to search for neighbors.
-        
-        Returns:
-        - recentered_peaks (array): Recentered peaks.
-        """
-        # Create a KDTree for efficient nearest neighbor search
-        tree = KDTree(peaks)
-        
-        recentered_peaks = []
-        for peak in peaks:
-            # Query the KDTree to find the nearest peaks
-            # distances, neighbor_indices = tree.query(peak.reshape(1, -1), k=k)
-            k_local = min(k, len(tree.data) - 1)  # Adjust k based on the number of available points
-            distances, neighbor_indices = tree.query(peak.reshape(1, -1), k=k_local)
+        # Initialize instance variables
+        self.pole_chislice = pole_chislice
+        self.pole_qrslice = pole_qrslice
+        self.poleleveler = poleleveler
 
-            # Filter neighbors within the given radius
-            valid_indices = neighbor_indices[distances <= radius]
-            neighbors = peaks[valid_indices]
-            
-            # Check the local maxima among neighbors
-            local_maxima = np.argmax(self.DoG[neighbors[:, 0], neighbors[:, 1]])
-            recentered_peak = neighbors[local_maxima]
-            
-            # Recenter the peak
-            recentered_peaks.append(recentered_peak)
-        
-        return np.array(recentered_peaks)
-    
-    # (PROCEDURE) Find Peaks Using Difference of Gaussians
-    # -- Variant 1: Recenter -> Cluster
-    def find_peaks_DoG(self, img_xr, sigma1=1.0, sigma2=2.0, threshold=0.006, clustering_method='DBSCAN', eps=1, min_samples=2, k=3, radius=5):
-        """
-        Find peaks in a 2D array using the Difference of Gaussians (DoG) method.
+        # Slice the DataArray
+        sliced_img = img.sel(qr=slice(*pole_qrslice), chi=slice(*pole_chislice))
 
-        Parameters:
-        - img_xr (xarray DataArray): The input 2D array containing intensity values.
-        - sigma1 (float, default=1.0): The standard deviation for the first Gaussian filter.
-        - sigma2 (float, default=2.0): The standard deviation for the second Gaussian filter.
-        - threshold (float, default=0.2): Threshold for initial peak identification.
-        - clustering_method (str, default='DBSCAN'): The clustering method to use ('DBSCAN' or 'HDBSCAN').
-        - eps (float, default=3): The maximum distance between two samples for them to be considered as in the same cluster (DBSCAN).
-        - min_samples (int, default=2): The number of samples in a neighborhood for a point to be considered as a core point (DBSCAN).
-        - k (int, default=3): The number of nearest neighbors to consider for the recentering algorithm.
-        - radius (float, default=5): The radius within which to search for neighbors in the recentering algorithm.
+        # Interpolate gaps along 'qr' dimension using 'slinear' (spline interpolation of order 1)
+        interp_img = sliced_img.interpolate_na(dim='qr', method='slinear')
 
-        Returns:
-        - img_xr (xarray DataArray): The input array with peak information stored in its attrs attribute.
-        """
-        # Validate sigma values
-        if sigma2 <= sigma1:
-            raise ValueError("sigma2 must be greater than sigma1.")
-        
-        # Step 0: Append mask to DataArray
-        # img_xr = self.append_mask_to_dataarray(img_xr)
+        # Perform background leveling
+        if poleleveler == 'linear':
+            # Fit a linear model to the background and subtract it from the data
+            chi_values = interp_img['chi'].values
+            intensity_values = interp_img.sum(dim='qr').values  # summing over qr for each chi
 
-        # Step 1: Normalize Data
-        img_normalized = self.normalize_data(img_xr)
-        
-        # Step 2: Initial Peak Identification
-        initial_peaks = self.initial_peak_identification(img_normalized, sigma1, sigma2, threshold)
-        
-        # Step 3: Handle Edge Cases
-        initial_peaks = self.handle_edge_cases(img_normalized, initial_peaks)
-        
-        # Debugging information
-        print("Number of initial peaks:", np.count_nonzero(~np.isnan(initial_peaks)))
+            coeffs = np.polyfit(chi_values, intensity_values, 1)  # Linear fit
+            linear_background = np.polyval(coeffs, chi_values)
 
-        # Step 4: Recenter Peaks
-        valid_peak_coords = np.column_stack(np.where(~np.isnan(initial_peaks)))
-        recentered_peak_coords = self.recenter_peaks(valid_peak_coords, k=k, radius=radius)
+            # Ensure linear fit doesn't exceed actual intensity values
+            linear_background = np.minimum(linear_background, intensity_values)
 
-        # Create a new array for recentered peaks based on the original shape
-        recentered_peaks = np.full(initial_peaks.shape, np.nan)
-        for coord in recentered_peak_coords:
-            recentered_peaks[coord[0], coord[1]] = self.DoG[coord[0], coord[1]]
+            # Subtract background but ensure intensity remains non-negative
+            pole_fig = np.maximum(intensity_values - linear_background, 0)
 
-        print("Number of recentered peaks:", np.count_nonzero(~np.isnan(recentered_peaks)))
-        
-        # Step 5: Cluster Local Maxima
-        clustered_peaks = self.cluster_local_maxima(recentered_peaks, method=clustering_method, eps=eps, min_samples=min_samples)
-        
-        print("Number of final peaks:", np.count_nonzero(~np.isnan(clustered_peaks)))
-        
-        # Initialize output DataArray for peaks
-        peaks_xr = xr.DataArray(clustered_peaks, coords=img_xr.coords, dims=img_xr.dims)
-        
-        # Store peak information in the attrs attribute of the original DataArray
-        img_xr.attrs['peaks'] = peaks_xr
-        
-        return img_xr
-
-    #  Display Image Output (w/ peaks & DoG): Modified version of the display_image method to overlay scatter points for peak locations
-    def display_image_with_peaks_and_DoG(self, img, title='Image with Peaks', cmap='turbo'):
-        plt.close('all')
-        plt.figure(figsize=(15, 7))
-
-        DoG = self.DoG
-        extent = None
-
-        if isinstance(img, xr.DataArray):
-            img_values = img.values
-            peaks = img.attrs.get('peaks', None)
-            coords_names = list(img.coords.keys())
-            if len(coords_names) == 2:
-                extent = [
-                    img.coords[coords_names[1]].min(),
-                    img.coords[coords_names[1]].max(),
-                    img.coords[coords_names[0]].min(),
-                    img.coords[coords_names[0]].max()
-                ]
-                ylabel, xlabel = coords_names
+        elif poleleveler == 'average':
+            pole_fig = interp_img.mean(dim='qr').values  # average over qr for each chi
 
         else:
-            img_values = img
-            peaks = None
+            pole_fig = interp_img.sum(dim='qr').values  # sum over qr for each chi
 
-        # Calculate vmin and vmax for the original image
-        vmin = np.nanpercentile(img_values, 10)
-        vmax = np.nanpercentile(img_values, 99)
+        # Create output DataArray
+        pole_fig_da = xr.DataArray(pole_fig,
+                                coords=[('chi', interp_img['chi'].values)],
+                                attrs={'pole_chislice': pole_chislice, 'pole_qrslice': pole_qrslice, 'poleleveler': poleleveler})
+        
+        # Update instance variable
+        self.polefig1D_xr = pole_fig_da
 
-        plt.subplot(1, 2, 1)
-        plt.imshow(np.flipud(img_values),
-                cmap=cmap,
-                vmin=vmin,  # Use calculated vmin and vmax
-                vmax=vmax,  
-                extent=extent,
-                aspect='auto')
-        plt.colorbar()
-        plt.title(f"{title} - Original")
-        plt.xlabel(xlabel)
-        plt.ylabel(ylabel)
+        return pole_fig_da  
 
-        if peaks is not None:
-            peak_coords = np.column_stack(np.where(~np.isnan(peaks.values)))
-            peak_x_values = peaks.coords[coords_names[1]].values[peak_coords[:, 1]]
-            peak_y_values = peaks.coords[coords_names[0]].values[peak_coords[:, 0]]
-            plt.scatter(peak_x_values, peak_y_values, c='red', marker='o')
+    def azimuth1D(self, img, chi_range, qr_range, sum_direction, discretization=0.1):
+        """
+        Description:
 
-        plt.subplot(1, 2, 2)
-        plt.imshow(np.flipud(DoG),
-                cmap=cmap,
-                extent=extent,
-                aspect='auto')
-        plt.colorbar()
-        plt.title(f"{title} - DoG")
-        plt.xlabel(xlabel)
-        plt.ylabel(ylabel)
+        Variables
 
-        plt.tight_layout()
+        Output:
+        
+        """
+        # Step 1: Input Validation
+        if 'qxy' not in img.coords or 'qz' not in img.coords:
+            raise ValueError("The input DataArray must have 'qxy' and 'qz' as coordinates.")
+
+        chi_min, chi_max = chi_range
+        qr_min, qr_max = qr_range
+
+        if sum_direction not in ['chi', 'qr']:
+            raise ValueError("Invalid sum_direction. Choose either 'chi' or 'qr'.")
+
+        # Step 2: Coordinate Conversion
+        qxy = img['qxy']
+        qz = img['qz']
+
+        chi = np.arctan2(qz, qxy) * (180 / np.pi)
+        qr = np.sqrt(qxy**2 + qz**2)
+
+        # Step 3: Masking and Slicing
+        mask = (chi >= chi_min) & (chi <= chi_max) & (qr >= qr_min) & (qr <= qr_max)
+        self.azimuth_mask = mask
+        self.original_total_intensity = img.where(mask).sum().item()
+
+        # Step 4: Azimuthal Summation
+        chi_values = np.arange(chi_min, chi_max, discretization)
+        qr_values = np.arange(qr_min, qr_max, discretization)
+
+        sum_array = np.zeros(len(chi_values) if sum_direction == 'chi' else len(qr_values))
+
+        for i, val in enumerate(chi_values if sum_direction == 'chi' else qr_values):
+            lower_bound = val
+            upper_bound = val + discretization
+
+            local_mask = mask & (chi >= lower_bound) & (chi < upper_bound) if sum_direction == 'chi' else \
+                        mask & (qr >= lower_bound) & (qr < upper_bound)
+
+            local_intensity = img.where(local_mask)
+            pixel_split_factor = np.abs(chi - val) / discretization if sum_direction == 'chi' else \
+                                np.abs(qr - val) / discretization
+
+            sum_array[i] = (local_intensity * pixel_split_factor).sum().item()
+
+        self.azimuth1D_xr_sum = xr.DataArray(sum_array, coords=[chi_values if sum_direction == 'chi' else qr_values], dims=[sum_direction])
+
+        # Step 5: Verification of Pixel Splitting
+        if not np.isclose(self.azimuth1D_xr_sum.sum().item(), self.original_total_intensity, atol=1e-6):
+            raise ValueError("Pixel splitting error: Total intensity mismatch.")
+
+        return self.azimuth1D_xr_sum
+
+    def display_image1D(self, img1D, color='red'):
+        """
+        Description: Plots a 1D DataArray using matplotlib.
+
+        Variables:
+        - img1D: The 1D Xarray DataArray to be plotted.
+        - color: Color of the plot line.
+
+        Output:
+        Displays the plot.
+        """
+
+        plt.figure(figsize=(10, 6))
+        img1D.plot.line(color=color)
+
+        plt.ylabel('Intensity (arb. units)')
+        plt.xlabel(img1D.attrs.get('sumdir', 'Coordinate'))
+        
+        plt.title('1D Integrated Image')
+        plt.grid(True)
+
         plt.show()
 
-    #  Display Image Output (w/ peaks): Modified version of the display_image method to overlay scatter points for peak locations
-    def display_image_with_peaks(self, img, title='Image with Peaks', cmap='turbo'):
-        plt.close('all')
-
-        # Check for invalid or incompatible types
-        if img is None or not isinstance(img, (np.ndarray, xr.DataArray)):
-            raise ValueError("The input image is None or not of a compatible type.")
-
-        # Initialize extent
-        extent = None
-
-        # Check for xarray DataArray
-        if isinstance(img, xr.DataArray):
-            img_values = img.values
-            peaks = img.attrs.get('peaks', None)  # Retrieve peaks from attrs
-
-            # Extract extent and axis labels from xarray coordinates if available
-            coords_names = list(img.coords.keys())
-            if len(coords_names) == 2:
-                extent = [
-                    img.coords[coords_names[1]].min(),
-                    img.coords[coords_names[1]].max(),
-                    img.coords[coords_names[0]].min(),
-                    img.coords[coords_names[0]].max()
-                ]
-                ylabel, xlabel = coords_names
-        else:
-            img_values = img
-            peaks = None
-
-            # Use self.coords if available
-            if self.coords is not None:
-                extent = [
-                    self.coords['x_min'],
-                    self.coords['x_max'],
-                    self.coords['y_min'],
-                    self.coords['y_max']
-                ]
-                xlabel, ylabel = 'qxy', 'qz'
-
-        # Check for empty or all NaN array
-        if np.all(np.isnan(img_values)) or img_values.size == 0:
-            raise ValueError("The input image is empty or contains only NaN values.")
-
-        vmin = np.nanpercentile(img_values, 10)
-        vmax = np.nanpercentile(img_values, 99)
-
-        plt.imshow(np.flipud(img_values),
-                cmap=cmap,
-                vmin=vmin,
-                vmax=vmax,
-                extent=extent,
-                aspect='auto')  # Ensure the aspect ratio is set automatically
-
-        plt.colorbar()
-
-        # Overlay scatter points for peak locations
-        if peaks is not None:
-            peak_coords = np.column_stack(np.where(~np.isnan(peaks.values)))
-            peak_x_values = peaks.coords[coords_names[1]].values[peak_coords[:, 1]]
-            peak_y_values = peaks.coords[coords_names[0]].values[peak_coords[:, 0]]
-            plt.scatter(peak_x_values, peak_y_values, c='red', marker='o')
-
-        plt.title(title)
-        plt.xlabel(xlabel)
-        plt.ylabel(ylabel)
-        # plt.colorbar()
-        plt.show()
-        
-    # Variant 2: Cluster -> Recenter
-    def find_peaks_DoG_CR(self, img_xr, sigma1=1.0, sigma2=2.0, threshold=0.006, clustering_method='DBSCAN', eps=1, min_samples=2, k=3, radius=5):
-        """
-        Find peaks in a 2D array using the Difference of Gaussians (DoG) method.
-
-        Parameters:
-        - img_xr (xarray DataArray): The input 2D array containing intensity values.
-        - sigma1 (float, default=1.0): The standard deviation for the first Gaussian filter.
-        - sigma2 (float, default=2.0): The standard deviation for the second Gaussian filter.
-        - threshold (float, default=0.2): Threshold for initial peak identification.
-        - clustering_method (str, default='DBSCAN'): The clustering method to use ('DBSCAN' or 'HDBSCAN').
-        - eps (float, default=3): The maximum distance between two samples for them to be considered as in the same cluster (DBSCAN).
-        - min_samples (int, default=2): The number of samples in a neighborhood for a point to be considered as a core point (DBSCAN).
-        - k (int, default=3): The number of nearest neighbors to consider for the recentering algorithm.
-        - radius (float, default=5): The radius within which to search for neighbors in the recentering algorithm.
-
-        Returns:
-        - img_xr (xarray DataArray): The input array with peak information stored in its attrs attribute.
-        """
-
-        if sigma2 <= sigma1:
-            raise ValueError("sigma2 must be greater than sigma1.")
-        
-        # Step 1: Normalize Data
-        img_normalized = self.normalize_data(img_xr)
-        
-        # Step 2: Initial Peak Identification
-        initial_peaks = self.initial_peak_identification(img_normalized, sigma1, sigma2, threshold)
-        
-        # Step 3: Handle Edge Cases
-        initial_peaks = self.handle_edge_cases(img_normalized, initial_peaks)
-        
-        # Debugging information
-        print("Number of initial peaks:", np.count_nonzero(~np.isnan(initial_peaks)))
-
-        # Step 4: Cluster Local Maxima
-        clustered_peaks = self.cluster_local_maxima(initial_peaks, method=clustering_method, eps=eps, min_samples=min_samples)
-        
-        print("Number of final peaks:", np.count_nonzero(~np.isnan(clustered_peaks)))
-
-        # Convert clustered_peaks to valid coordinates for KDTree
-        valid_peak_coords = np.column_stack(np.where(~np.isnan(clustered_peaks)))
-        
-        # Step 5: Recenter Peaks
-        recentered_peak_coords = self.recenter_peaks(valid_peak_coords, k=k, radius=radius)
-        
-        # Create a new array for recentered peaks based on the original shape
-        recentered_peaks = np.full(clustered_peaks.shape, np.nan)
-        for coord in recentered_peak_coords:
-            recentered_peaks[coord[0], coord[1]] = self.DoG[coord[0], coord[1]]
-
-        print("Number of recentered peaks:", np.count_nonzero(~np.isnan(recentered_peaks)))
-
-        # Initialize output DataArray for peaks
-        peaks_xr = xr.DataArray(recentered_peaks, coords=img_xr.coords, dims=img_xr.dims)
-        
-        # Store peak information in the attrs attribute of the original DataArray
-        img_xr.attrs['peaks'] = peaks_xr
-        
-        return img_xr
-
-    def find_peaks_DoG_DS(self, img_xr, sigma1=1.0, sigma2=2.0, threshold=0.006, clustering_method='DBSCAN', eps=1, min_samples=2, k=3, radius=5):
-        """
-        Find peaks in a 2D array using the Difference of Gaussians (DoG) method.
-
-        Parameters:
-        - img_xr (xarray DataArray): The input 2D array containing intensity values.
-        - sigma1 (float, default=1.0): The standard deviation for the first Gaussian filter.
-        - sigma2 (float, default=2.0): The standard deviation for the second Gaussian filter.
-        - threshold (float, default=0.2): Threshold for initial peak identification.
-        - clustering_method (str, default='DBSCAN'): The clustering method to use ('DBSCAN' or 'HDBSCAN').
-        - eps (float, default=3): The maximum distance between two samples for them to be considered as in the same cluster (DBSCAN).
-        - min_samples (int, default=2): The number of samples in a neighborhood for a point to be considered as a core point (DBSCAN).
-        - k (int, default=3): The number of nearest neighbors to consider for the recentering algorithm.
-        - radius (float, default=5): The radius within which to search for neighbors in the recentering algorithm.
-
-        Returns:
-        - img_xr (xarray DataArray): The input array with peak information stored in its attrs attribute.
-        """
-        # Validate sigma values
-        if sigma2 <= sigma1:
-            raise ValueError("sigma2 must be greater than sigma1.")
-        
-        # Step 0: Append mask to DataArray
-        # img_xr = self.append_mask_to_dataarray(img_xr)
-
-        # Step 1: Normalize Data
-        img_normalized = self.normalize_data(img_xr)
-        
-        # Step 2: Initial Peak Identification
-        initial_peaks = self.initial_peak_identification(img_normalized, sigma1, sigma2, threshold)
-        
-        # Step 3: Handle Edge Cases
-        initial_peaks = self.handle_edge_cases(img_normalized, initial_peaks)
-        
-        # Debugging information
-        print("Number of initial peaks:", np.count_nonzero(~np.isnan(initial_peaks)))
-
-        # Step 4: Recenter Peaks
-        valid_peak_coords = np.column_stack(np.where(~np.isnan(initial_peaks)))
-        recentered_peak_coords = self.recenter_peaks(valid_peak_coords, k=k, radius=radius)
-
-        # Create a new array for recentered peaks based on the original shape
-        recentered_peaks = np.full(initial_peaks.shape, np.nan)
-        for coord in recentered_peak_coords:
-            recentered_peaks[coord[0], coord[1]] = self.DoG[coord[0], coord[1]]
-
-        print("Number of recentered peaks:", np.count_nonzero(~np.isnan(recentered_peaks)))
-        
-        # Step 5: Cluster Local Maxima
-        clustered_peaks = self.cluster_local_maxima(recentered_peaks, method=clustering_method, eps=eps, min_samples=min_samples)
-        
-        print("Number of final peaks:", np.count_nonzero(~np.isnan(clustered_peaks)))
-        
-        # Initialize output DataArray for peaks
-        peaks_xr = xr.DataArray(clustered_peaks, coords=img_xr.coords, dims=img_xr.dims)
-
-        # Create DataSet to include original data, mask, DoG, and maskedDoG
-        output_ds = xr.Dataset({
-            'original_data': img_xr,
-            'mask': self.append_mask_to_dataarray(img_xr)['mask'],
-            'DoG': self.DoG,
-            'masked_DoG': self.maskedDoG,
-            'peaks': peaks_xr
-        })
-
-        # Return the DataSet instead of DataArray
-        return output_ds
-
-class PeakSearch:
-    def __init__(self, img_xr) -> None:
-        self.img_xr = img_xr # Accepts an input DataArray
-        self.img_ds = self.normalize_data() # Image DataSet (XArray)
-            # Must convert DataArray into DataSet
-        
-        self.DoG = None # Difference of Gaussians (initialization)
-        self.mask = None # Overlay mask (initialization)
-        self.maskedDoG = None # Masked difference of Gaussians
-
-        pass
-
-    # (STEP 0) Append a boolean mask of null value sto the dataarray to overlay on the difference of Gaussians.
-    def append_mask_to_dataarray_DS(self, img_xr):
-        """
-        Appends a mask layer to the xarray DataArray to set zero-intensity regions to NaN.
-
-        Parameters:
-        - img_xr (xarray DataArray): The input 2D array containing intensity values.
-
-        Returns:
-        - img_ds (xarray DataSet): The modified DataSet with an additional mask layer.
-        """
-        zero_intensity_mask = (img_xr > 0).astype(int)  # Convert to boolean and then to int
-
-        # Create a DataSet from the original DataArray
-        img_ds = xr.Dataset({'original_data': img_xr})
-
-        # Add the mask as a new DataArray inside the DataSet
-        img_ds['mask'] = xr.DataArray(zero_intensity_mask.values, coords=img_xr.coords, dims=img_xr.dims)
-
-        return img_ds
-    
-    # (STEP 1) Normalization: The input DataArray is normalized to '1' at the maximum value.
-    def normalize_data(self, img_xr):
-        return img_xr['original_data'] / np.nanmax(img_xr['original_data'].values)
-    
-        # (STEP 2) Initial Peak Identification: Peaks are initially identified using the Difference of Gaussians (DoG).
-    def initial_peak_identification(self, img_ds, sigma1, sigma2, threshold):
-        img_xr = img_ds['original_data']
-        img_smooth1 = gaussian_filter(img_xr.fillna(0).values, sigma=sigma1)
-        img_smooth2 = gaussian_filter(img_xr.fillna(0).values, sigma=sigma2)
-        DoG = img_smooth1 - img_smooth2  # Difference of Gaussians Value
-        
-        # Apply NaN mask to DoG using the mask attribute if present
-        mask = img_xr.attrs.get('mask', None)
-        if mask is not None:
-            maskedDoG = np.where(mask == 0, np.nan, DoG)
-        else:
-            maskedDoG = DoG
-            
-        self.DoG = xr.DataArray(DoG, coords=img_xr.coords, dims=img_xr.dims)
-        self.maskedDoG = xr.DataArray(maskedDoG, coords=img_xr.coords, dims=img_xr.dims)
-        img_ds['DoG'] = self.DoG
-        img_ds['maskedDoG'] = self.maskedDoG
-        
-        return img_ds
-
-    # (STEP 3) Edge Case Handling: Peaks at the edges or interfaces of data/no data regions are discarded or reassessed.
-    def handle_edge_cases(self, img_ds, initial_peaks):
-        img_xr = img_ds['original_data']
-        edge_mask = np.isnan(gaussian_filter(img_xr.fillna(0).values, sigma=1))
-        initial_peaks[edge_mask] = np.nan
-
-        # return img_ds
-        return initial_peaks
-    
 ## --- IMAGE INTERPOLATION  --- ##
 class GapInfo:
     def __init__(self, start, end, length):

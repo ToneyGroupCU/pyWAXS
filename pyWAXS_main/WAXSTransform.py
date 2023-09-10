@@ -1,12 +1,3 @@
-"""
-File to:
-    1. Use pygix to apply the missing wedge Ewald's sphere correction & convert to q-space
-    2. Generate 2D plots of Qz vs Qxy corrected detector images
-    3. Generate 2d plots of Q vs Chi images, with the option to apply the sin(chi) correction
-    4. etc.
-"""
-
-# Imports
 import xarray as xr
 import numpy as np
 import pygix  # type: ignore
@@ -17,7 +8,11 @@ from typing import Union, Tuple
 # from tqdm.auto import tqdm 
 
 class WAXSTransform:
-    """ Class for transforming GIWAXS data into different formats. """
+    """ Class for transforming GIWAXS data into different formats.
+    1. Use pygix to apply the missing wedge Ewald's sphere correction & convert to q-space
+    2. Generate 2D plots of Qz vs Qxy corrected detector images
+    3. Generate 2d plots of Q vs Chi images, with the option to apply the sin(chi) correction
+    4. etc. """
     def __init__(self, 
                  poniPath: Union[str, pathlib.Path], 
                  maskPath: Union[str, pathlib.Path, np.ndarray], 
