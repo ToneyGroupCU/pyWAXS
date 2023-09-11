@@ -17,6 +17,8 @@ from scipy.optimize import curve_fit
 from scipy.spatial import KDTree
 from scipy.interpolate import griddata
 from scipy.interpolate import interp1d
+from scipy.sparse import csr_matrix
+from scipy.interpolate import interp1d
 # -- SciKit Modules 
 from skimage import feature
 from sklearn.neighbors import KDTree
@@ -863,64 +865,206 @@ class Integration1D(WAXSReduce):
 
         return pole_fig_da  
 
+    @staticmethod
+    def convert_to_chi_qr(qxy, qz):
+        qxy_mesh, qz_mesh = np.meshgrid(qxy, qz)
+        chi = np.arctan2(qz_mesh, qxy_mesh) * (180 / np.pi)
+        qr = np.sqrt(qxy_mesh ** 2 + qz_mesh ** 2)
+        return chi, qr
+
+    @staticmethod
+    def generate_mock_data_with_variable_intensity(size=200, num_arcs=5, intensity_base=100, intensity_variation=20):
+        x, y = np.linspace(-size // 2, size // 2, size), np.linspace(-size // 2, size // 2, size)
+        xx, yy = np.meshgrid(x, y)
+        rr = np.sqrt(xx ** 2 + yy ** 2)
+        angle = np.arctan2(yy, xx)
+
+        img = np.zeros((size, size))
+        for i in range(1, num_arcs + 1):
+            arc_mask = np.abs(rr - i * 10) < 1
+            img[arc_mask] = intensity_base + intensity_variation * np.sin(3 * angle[arc_mask])
+
+        img[:, :size // 2] = 0
+        return img
+
+    @staticmethod
+    def interpolate_along_chi(chi, qr, img):
+        chi_values = np.unique(chi)
+        interpolated_img = np.zeros_like(img)
+
+        for chi_val in chi_values:
+            mask = chi == chi_val
+            qr_values = qr[mask]
+            img_values = img[mask]
+            if len(qr_values) < 2:
+                continue
+            interpolator = interp1d(qr_values, img_values, kind='linear', fill_value='extrapolate')
+            interpolated_img[mask] = interpolator(qr[mask])
+
+        return interpolated_img
+        
     def azimuth1D(self, img, chi_range, qr_range, sum_direction, discretization=0.1):
         """
         Description:
+        Takes a 2D Xarray DataArray and performs azimuthal integration over a specified range of chi and qr values.
 
-        Variables
+        Variables:
+        - img: Input Xarray DataArray with 'qxy' and 'qz' as coordinates.
+        - chi_range: A tuple (chi_min, chi_max) specifying the range of chi values for integration.
+        - qr_range: A tuple (qr_min, qr_max) specifying the range of qr values for integration.
+        - sum_direction: A string specifying the direction along which to sum ('chi' or 'qr').
+        - discretization: A float specifying the step size for the azimuthal sum.
+
+        Attributes:
+        - self.azimuth1D_xr_sum: Stores the resulting 1D DataArray after azimuthal integration.
+        - self.azimuth_mask: Stores the mask used for slicing the image based on chi and qr ranges.
+        - self.original_total_intensity: Stores the original total intensity of the masked image for verification.
 
         Output:
-        
+        Returns the 1D DataArray after azimuthal integration and stores it in self.azimuth1D_xr_sum.
         """
-        # Step 1: Input Validation
-        if 'qxy' not in img.coords or 'qz' not in img.coords:
-            raise ValueError("The input DataArray must have 'qxy' and 'qz' as coordinates.")
 
+        qz_aliases = ['qz', 'q_z', 'QZ', 'Q_z', 'Q_Z']
+        qxy_aliases = ['qxy', 'q_xy', 'QXY', 'Qxy', 'Q_xy', 'Q_XY']
+        
+        qz_dim = None
+        qxy_dim = None
+        for dim in img.dims:
+            if dim in qz_aliases:
+                qz_dim = dim
+            if dim in qxy_aliases:
+                qxy_dim = dim
+        
+        if qz_dim is None or qxy_dim is None:
+            raise ValueError("The input DataArray must have 'qxy' or an alias and 'qz' or an alias as dimensions.")
+        
         chi_min, chi_max = chi_range
         qr_min, qr_max = qr_range
-
+        
         if sum_direction not in ['chi', 'qr']:
             raise ValueError("Invalid sum_direction. Choose either 'chi' or 'qr'.")
-
+        
         # Step 2: Coordinate Conversion
-        qxy = img['qxy']
-        qz = img['qz']
-
-        chi = np.arctan2(qz, qxy) * (180 / np.pi)
-        qr = np.sqrt(qxy**2 + qz**2)
-
+        qxy = img.coords[qxy_dim].values
+        qz = img.coords[qz_dim].values
+        
+        chi, qr = self.convert_to_chi_qr(qxy, qz)
+        
         # Step 3: Masking and Slicing
-        mask = (chi >= chi_min) & (chi <= chi_max) & (qr >= qr_min) & (qr <= qr_max)
-        self.azimuth_mask = mask
+        mask = (chi >= chi_range[0]) & (chi <= chi_range[1]) & (qr >= qr_range[0]) & (qr <= qr_range[1])
+        img_masked = img.where(mask)
+        self.azimuth_mask = img_masked
         self.original_total_intensity = img.where(mask).sum().item()
+        
+        # Step 4: Interpolation Along Chi
+        img_interpolated = self.interpolate_along_chi(chi, qr, img_masked.values)
+        self.img_interpolated = img_interpolated
 
-        # Step 4: Azimuthal Summation
-        chi_values = np.arange(chi_min, chi_max, discretization)
-        qr_values = np.arange(qr_min, qr_max, discretization)
-
-        sum_array = np.zeros(len(chi_values) if sum_direction == 'chi' else len(qr_values))
-
-        for i, val in enumerate(chi_values if sum_direction == 'chi' else qr_values):
-            lower_bound = val
-            upper_bound = val + discretization
-
-            local_mask = mask & (chi >= lower_bound) & (chi < upper_bound) if sum_direction == 'chi' else \
-                        mask & (qr >= lower_bound) & (qr < upper_bound)
-
-            local_intensity = img.where(local_mask)
-            pixel_split_factor = np.abs(chi - val) / discretization if sum_direction == 'chi' else \
-                                np.abs(qr - val) / discretization
-
-            sum_array[i] = (local_intensity * pixel_split_factor).sum().item()
-
-        self.azimuth1D_xr_sum = xr.DataArray(sum_array, coords=[chi_values if sum_direction == 'chi' else qr_values], dims=[sum_direction])
-
-        # Step 5: Verification of Pixel Splitting
-        if not np.isclose(self.azimuth1D_xr_sum.sum().item(), self.original_total_intensity, atol=1e-6):
-            raise ValueError("Pixel splitting error: Total intensity mismatch.")
-
+        # Step 5: Azimuthal Summation
+        self.azimuth1D_xr_sum = xr.DataArray(img_interpolated, 
+            coords=[('chi', np.linspace(chi_range[0], chi_range[1], img_interpolated.shape[0])),
+                    ('qr', np.linspace(qr_range[0], qr_range[1], img_interpolated.shape[1]))],
+            dims=['chi', 'qr'])
+        
         return self.azimuth1D_xr_sum
 
+        '''
+        # # Step 2: Coordinate Conversion
+        # qxy = img[qxy_dim]
+        # qz = img[qz_dim]
+
+        # # Debugging: Check the range of qxy, qz, chi, and qr
+        # print(f"qxy range: {qxy.min().item()}, {qxy.max().item()}")
+        # print(f"qz range: {qz.min().item()}, {qz.max().item()}")
+
+        # chi = np.arctan2(qz, qxy) * (180 / np.pi)
+        # qr = np.sqrt(qxy**2 + qz**2)
+
+        # print(f"chi range: {chi.min().item()}, {chi.max().item()}")
+        # print(f"qr range: {qr.min().item()}, {qr.max().item()}")
+        
+        # # Step 3: Masking and Slicing
+        # # mask = (chi >= chi_min) & (chi <= chi_max) & (qr >= qr_min) & (qr <= qr_max)
+        # # self.azimuth_mask = mask
+        # # self.original_total_intensity = img.where(mask).sum().item()
+
+        # # # Step 4: Construct the Azimuthal Matrix
+        # # A = self._create_azimuthal_matrix(chi, qr, mask, chi_range, qr_range, discretization, sum_direction)
+        
+        # # # Step 5: Azimuthal Summation Using Sparse Matrix
+        # # I = img.values.flatten()
+        # # S = A.dot(I)
+        
+        # chi, qr = self.convert_to_chi_qr(img.coords['qxy'].values, img.coords['qz'].values)
+
+        # mask = (chi >= chi_range[0]) & (chi <= chi_range[1]) & (qr >= qr_range[0]) & (qr <= qr_range[1])
+        # img_masked = img.where(mask)
+
+        # self.azimuth_mask = img_masked
+        # self.original_total_intensity = img.where(mask).sum().item()
+        
+        # # Convert to chi and qr space
+        # img_transformed = self.convert_to_chi_qr(img.coords['qxy'].values, img.coords['qz'].values)
+
+        # # Interpolate along chi
+        # img_interpolated = self.interpolate_along_chi(chi, qr, img_transformed)
+
+        # # Your existing azimuthal integration code here, now working on img_interpolated
+        # self.azimuth1D_xr_sum = xr.DataArray(img_interpolated, coords=[np.arange(chi_range[0], chi_range[1], discretization) if sum_direction == 'chi' else np.arange(qr_range[0], qr_range[1], discretization)], dims=[sum_direction])
+
+        # # return img_interpolated
+        
+        # # Step 6: Verification of Pixel Splitting
+        # if not np.isclose(self.azimuth1D_xr_sum.sum().item(), self.original_total_intensity, atol=1e-6):
+        #     raise ValueError("Pixel splitting error: Total intensity mismatch.")
+            
+        # return self.azimuth1D_xr_sum
+        '''
+   
+    def generate_test_data(self, shape=(100, 100), num_arcs=3, arc_width=3):
+        """
+        Generate a test 2D DataArray with concentric half-arcs.
+
+        Parameters:
+        - shape: tuple, shape of the image
+        - num_arcs: int, number of concentric arcs
+        - arc_width: int, pixel width of each arc
+
+        Returns:
+        - xr.DataArray, the generated test data
+        """
+        y, x = np.ogrid[-shape[0]//2:shape[0]//2, -shape[1]//2:shape[1]//2]
+        mask = np.zeros(shape)
+        for i in range(num_arcs):
+            radius_inner = i * (arc_width + 5)  # 5 is the spacing between arcs
+            radius_outer = radius_inner + arc_width
+            mask_arc = (x ** 2 + y ** 2 >= radius_inner ** 2) & (x ** 2 + y ** 2 < radius_outer ** 2)
+            mask += mask_arc
+
+        # Only consider the half arcs (y > 0)
+        mask = mask * (y >= 0)
+
+        # Create a xarray DataArray
+        test_data = xr.DataArray(mask, coords=[('qz', np.linspace(-1, 1, shape[0])), ('qxy', np.linspace(-1, 1, shape[1]))])
+        return test_data
+
+    def coord_transform(self, img):
+        """
+        Perform the coordinate transformation from (qz, qxy) to (chi, qr).
+        
+        Parameters:
+        - img: xr.DataArray, input image in (qz, qxy) coordinates
+        
+        Returns:
+        - chi: xr.DataArray, image in chi coordinate
+        - qr: xr.DataArray, image in qr coordinate
+        """
+        qz = img.coords['qz']
+        qxy = img.coords['qxy']
+        chi = np.arctan2(qz, qxy) * (180 / np.pi)
+        qr = np.sqrt(qxy ** 2 + qz ** 2)
+        return chi, qr
+    
     def display_image1D(self, img1D, color='red'):
         """
         Description: Plots a 1D DataArray using matplotlib.
@@ -943,6 +1087,274 @@ class Integration1D(WAXSReduce):
         plt.grid(True)
 
         plt.show()
+
+    def plot_data_transform_interpolation(original_data, chi, qr, transformed_data, interpolated_data, chi_range, qr_range):
+        fig, ax = plt.subplots(1, 3, figsize=(20, 6))
+        
+        # Original data in qxy vs qz space
+        ax[0].imshow(original_data, cmap='viridis', origin='lower')
+        ax[0].set_title('Original Data (qxy vs qz)')
+        ax[0].set_xlabel('qxy')
+        ax[0].set_ylabel('qz')
+        
+        # Transformed data in chi vs qr space
+        ax[1].scatter(chi.flatten(), qr.flatten(), c=transformed_data.flatten(), cmap='viridis', s=1)
+        ax[1].set_title('Transformed Data (chi vs qr)')
+        ax[1].set_xlabel('chi (degrees)')
+        ax[1].set_ylabel('qr')
+        ax[1].set_xlim([-180, 180])
+        
+        # Interpolated data in chi vs qr space (2D image)
+        ax[2].imshow(interpolated_data, aspect='auto', cmap='viridis', 
+                    extent=[chi_range[0], chi_range[1], qr_range[0], qr_range[1]], origin='lower')
+        ax[2].set_title('Interpolated Data (chi vs qr)')
+        ax[2].set_xlabel('chi (degrees)')
+        ax[2].set_ylabel('qr')
+        
+        plt.tight_layout()
+        plt.show()
+
+# Define the methods and functions
+class AzimuthalIntegrator:
+
+    @staticmethod
+    def convert_to_chi_qr(qxy, qz):
+        qxy_mesh, qz_mesh = np.meshgrid(qxy, qz)
+        chi = np.arctan2(qz_mesh, qxy_mesh) * (180 / np.pi)
+        qr = np.sqrt(qxy_mesh ** 2 + qz_mesh ** 2)
+        return chi, qr
+
+    @staticmethod
+    def interpolate_along_chi(chi, qr, img):
+        chi_values = np.unique(chi)
+        interpolated_img = np.zeros_like(img)
+
+        for chi_val in chi_values:
+            mask = chi == chi_val
+            qr_values = qr[mask]
+            img_values = img[mask]
+            if len(qr_values) < 2:
+                continue
+            interpolator = interp1d(qr_values, img_values, kind='linear', fill_value='extrapolate')
+            interpolated_img[mask] = interpolator(qr[mask])
+
+        return interpolated_img
+
+    def azimuth1D(self, img, chi_range, qr_range, sum_direction, discretization=0.1):
+        qz_aliases = ['qz', 'q_z', 'QZ', 'Q_z', 'Q_Z']
+        qxy_aliases = ['qxy', 'q_xy', 'QXY', 'Qxy', 'Q_xy', 'Q_XY']
+
+        qz_dim = None
+        qxy_dim = None
+        for dim in img.dims:
+            if dim in qz_aliases:
+                qz_dim = dim
+            if dim in qxy_aliases:
+                qxy_dim = dim
+
+        if qz_dim is None or qxy_dim is None:
+            raise ValueError("The input DataArray must have 'qxy' or an alias and 'qz' or an alias as dimensions.")
+
+        chi_min, chi_max = chi_range
+        qr_min, qr_max = qr_range
+
+        if sum_direction not in ['chi', 'qr']:
+            raise ValueError("Invalid sum_direction. Choose either 'chi' or 'qr'.")
+
+        qxy = img.coords[qxy_dim].values
+        qz = img.coords[qz_dim].values
+
+        chi, qr = self.convert_to_chi_qr(qxy, qz)
+
+        mask = (chi >= chi_range[0]) & (chi <= chi_range[1]) & (qr >= qr_range[0]) & (qr <= qr_range[1])
+        img_masked = img.where(mask)
+        self.azimuth_mask = img_masked
+        self.original_total_intensity = img.where(mask).sum().item()
+
+        img_interpolated = self.interpolate_along_chi(chi, qr, img_masked.values)
+
+        self.azimuth1D_xr_sum = xr.DataArray(img_interpolated, 
+            coords=[np.arange(chi_range[0], chi_range[1], discretization) if sum_direction == 'chi' else np.arange(qr_range[0], qr_range[1], discretization)], 
+            dims=[sum_direction])
+
+        return self.azimuth1D_xr_sum
+
+    def generate_test_data(self, shape=(100, 100), num_arcs=3, arc_width=3):
+        y, x = np.ogrid[-shape[0]//2:shape[0]//2, -shape[1]//2:shape[1]//2]
+        mask = np.zeros(shape)
+        for i in range(num_arcs):
+            radius_inner = i * (arc_width + 5)
+            radius_outer = radius_inner + arc_width
+            mask_arc = (x ** 2 + y ** 2 >= radius_inner ** 2) & (x ** 2 + y ** 2 < radius_outer ** 2)
+            mask += mask_arc
+
+        mask = mask * (y >= 0)
+
+        test_data = xr.DataArray(mask, coords=[('qz', np.linspace(-1, 1, shape[0])), ('qxy', np.linspace(-1, 1, shape[1]))])
+        return test_data
+    
+    @staticmethod
+    def generate_test_data(qxy_min, qxy_max, qz_min, qz_max, num_points):
+        """
+        Generate a test dataset simulating concentric half arcs in qxy vs qz space.
+        
+        Parameters:
+        - qxy_min, qxy_max: Min and max values for qxy coordinate.
+        - qz_min, qz_max: Min and max values for qz coordinate.
+        - num_points: Number of points along each dimension.
+        
+        Returns: 
+        - test_data: 2D Xarray DataArray representing the test data.
+        """
+        qxy_values = np.linspace(qxy_min, qxy_max, num_points)
+        qz_values = np.linspace(qz_min, qz_max, num_points)
+        test_data = np.zeros((num_points, num_points))
+        
+        for i in range(num_points):
+            for j in range(num_points):
+                qxy = qxy_values[j]
+                qz = qz_values[i]
+                r = np.sqrt(qxy**2 + qz**2)
+                
+                # Create concentric half arcs
+                if 0.5 <= r <= 0.6 or 0.9 <= r <= 1.0:
+                    angle = np.arctan2(qz, qxy) * (180 / np.pi)
+                    if 0 <= angle <= 180:
+                        test_data[i, j] = 1
+
+        coords = {'qxy': qxy_values, 'qz': qz_values}
+        test_data = xr.DataArray(test_data, coords=coords, dims=['qz', 'qxy'])
+        return test_data
+    
+    @staticmethod
+    def plot_test_data(test_data):
+        """
+        Plot the test data in qxy vs qz space.
+        
+        Parameters:
+        - test_data: 2D Xarray DataArray representing the test data.
+        """
+        plt.imshow(test_data, origin='lower', aspect='auto', extent=[test_data.qxy.min(), test_data.qxy.max(), test_data.qz.min(), test_data.qz.max()])
+        plt.colorbar(label='Intensity')
+        plt.xlabel('qxy')
+        plt.ylabel('qz')
+        plt.title('Test Data (qxy vs qz)')
+        plt.show()
+
+    def convert_to_chi_qr(qxy, qz):
+        chi = np.arctan2(qz, qxy) * (180 / np.pi)
+        qr = np.sqrt(qxy**2 + qz**2)
+        return chi, qr
+
+    def generate_mock_data_with_variable_intensity(size=200, num_arcs=5, intensity_base=100, intensity_variation=20):
+        x, y = np.linspace(-size // 2, size // 2, size), np.linspace(-size // 2, size // 2, size)
+        xx, yy = np.meshgrid(x, y)
+        rr = np.sqrt(xx**2 + yy**2)
+        angle = np.arctan2(yy, xx)  # Angle in radians
+
+        img = np.zeros((size, size))
+        for i in range(1, num_arcs + 1):
+            arc_mask = np.abs(rr - i * 10) < 1
+            img[arc_mask] = intensity_base + intensity_variation * np.sin(3 * angle[arc_mask])
+
+        img[:, :size // 2] = 0
+        return img
+
+class ImageTransform:    
+    @staticmethod
+    def convert_to_chi_qr(qxy, qz):
+        qxy_mesh, qz_mesh = np.meshgrid(qxy, qz)
+        chi = np.arctan2(qz_mesh, qxy_mesh) * (180 / np.pi)
+        qr = np.sqrt(qxy_mesh ** 2 + qz_mesh ** 2)
+        return chi, qr
+    
+    @staticmethod
+    def generate_mock_data(size=100, num_arcs=5):
+        x, y = np.linspace(-size // 2, size // 2, size), np.linspace(-size // 2, size // 2, size)
+        xx, yy = np.meshgrid(x, y)
+        rr = np.sqrt(xx ** 2 + yy ** 2)
+        angle = np.arctan2(yy, xx)
+
+        img = np.zeros((size, size))
+        for i in range(1, num_arcs + 1):
+            arc_mask = np.abs(rr - i * 10) < 1
+            img[arc_mask] = 1
+
+        img[:, :size // 2] = 0
+        return img
+    
+    @staticmethod
+    def interpolate_along_chi(chi, qr, img):
+        unique_qr = np.unique(qr)
+        new_chi_values = np.linspace(-90, 90, 100)  # 100 points from -90 to 90 degrees
+        interpolated_img = []
+
+        for u_qr in unique_qr:
+            mask = (qr == u_qr)
+            subset_chi = chi[mask]
+            subset_data = img[mask]
+            if len(subset_chi) < 2:
+                continue
+            
+            interp_func = interp1d(subset_chi, subset_data, kind='linear', bounds_error=False, fill_value=0)
+            interpolated_row = interp_func(new_chi_values)
+            interpolated_img.append(interpolated_row)
+        
+        return np.array(interpolated_img)
+    
+    @staticmethod
+    def plot_data(mock_data, chi, qr, interpolated_img):
+        fig, ax = plt.subplots(1, 3, figsize=(18, 6))
+        
+        # Original data
+        ax[0].imshow(mock_data, cmap='viridis', origin='lower')
+        ax[0].set_title('Original Data')
+        ax[0].set_xlabel('x')
+        ax[0].set_ylabel('y')
+
+        # Transformed data
+        ax[1].scatter(chi, qr, c=mock_data.flatten(), cmap='viridis', s=1)
+        ax[1].set_title('Transformed Data (chi vs qr)')
+        ax[1].set_xlabel('chi')
+        ax[1].set_ylabel('qr')
+        
+        # Interpolated data
+        ax[2].imshow(interpolated_img, aspect='auto', cmap='viridis', origin='lower')
+        ax[2].set_title('Interpolated Data')
+        ax[2].set_xlabel('chi')
+        ax[2].set_ylabel('qr')
+        
+        plt.tight_layout()
+        plt.show()
+
+    @staticmethod
+    def extractcoord(img):
+
+        qz_aliases = ['qz', 'q_z', 'QZ', 'Q_z', 'Q_Z']
+        qxy_aliases = ['qxy', 'q_xy', 'QXY', 'Qxy', 'Q_xy', 'Q_XY']
+        
+        qz_dim = None
+        qxy_dim = None
+        for dim in img.dims:
+            if dim in qz_aliases:
+                qz_dim = dim
+            if dim in qxy_aliases:
+                qxy_dim = dim
+        
+        if qz_dim is None or qxy_dim is None:
+            raise ValueError("The input DataArray must have 'qxy' or an alias and 'qz' or an alias as dimensions.")
+        
+        # chi_min, chi_max = chi_range
+        # qr_min, qr_max = qr_range
+        
+        # if sum_direction not in ['chi', 'qr']:
+        #     raise ValueError("Invalid sum_direction. Choose either 'chi' or 'qr'.")
+        
+        # Step 2: Coordinate Conversion
+        qxy = img.coords[qxy_dim].values
+        qz = img.coords[qz_dim].values
+
+        return qxy, qz
 
 ## --- IMAGE INTERPOLATION  --- ##
 class GapInfo:
@@ -1251,3 +1663,211 @@ class ImageInterpolator:
         edge_img = self.edge_detection(img, method=edge_method)
         gaps = self.classify_gaps(edge_img)
         return self.interpolate_gaps(img, gaps, threshold)
+
+'''
+    def _create_azimuthal_matrix(self, chi, qr, mask, chi_range, qr_range, discretization, sum_direction):
+        rows, cols, data = [], [], []
+        values = np.arange(chi_range[0], chi_range[1], discretization) if sum_direction == 'chi' else np.arange(qr_range[0], qr_range[1], discretization)
+        
+        for i, val in enumerate(values):
+            lower_bound = val
+            upper_bound = val + discretization
+            local_mask = mask & (chi >= lower_bound) & (chi < upper_bound) if sum_direction == 'chi' else \
+                        mask & (qr >= lower_bound) & (qr < upper_bound)
+                        
+            pixel_indices = np.nonzero(local_mask)
+            
+            # Add a check to see if pixel_indices[0] is empty
+            if pixel_indices[0].size > 0:
+                # Debug: Check the maximum index value in pixel_indices[0]
+                print("Max index in pixel_indices[0]:", np.max(pixel_indices[0]))
+            else:
+                print("pixel_indices[0] is empty.")
+            
+            # Debug: Check the shapes of chi and qr
+            print("Shape of chi:", chi.shape)
+            print("Shape of qr:", qr.shape)
+            print("Max index in pixel_indices[0]:", np.max(pixel_indices[0]) if pixel_indices[0].size > 0 else "N/A")
+
+            # Remove out-of-bounds indices
+            pixel_indices = [idx for idx in pixel_indices[0] if idx < chi.shape[0] - 1]
+
+            for j in pixel_indices:
+                if j >= chi.shape[0]:
+                    print(f"Index out of bounds for chi: {j}")
+                elif j >= qr.shape[0]:
+                    print(f"Index out of bounds for qr: {j}")
+                
+                rows.append(i)
+                cols.append(j)
+                chi_np = chi.values
+                qr_np = qr.values
+
+                pixel_split_factor = np.abs(chi_np[j] - val) / discretization if sum_direction == 'chi' else \
+                                    np.abs(qr_np[j] - val) / discretization
+
+                data.append(pixel_split_factor)
+
+
+        return csr_matrix((data, (rows, cols)))
+
+        @staticmethod
+        def convert_to_chi_qr(qxy, qz):
+            chi = np.arctan2(qz, qxy) * (180 / np.pi)
+            qr = np.sqrt(qxy ** 2 + qz ** 2)
+            return chi, qr
+
+        @staticmethod
+        def generate_mock_data_with_variable_intensity(size=200, num_arcs=5, intensity_base=100, intensity_variation=20):
+            x, y = np.linspace(-size // 2, size // 2, size), np.linspace(-size // 2, size // 2, size)
+            xx, yy = np.meshgrid(x, y)
+            rr = np.sqrt(xx ** 2 + yy ** 2)
+            angle = np.arctan2(yy, xx)
+
+            img = np.zeros((size, size))
+            for i in range(1, num_arcs + 1):
+                arc_mask = np.abs(rr - i * 10) < 1
+                img[arc_mask] = intensity_base + intensity_variation * np.sin(3 * angle[arc_mask])
+
+            img[:, :size // 2] = 0
+            return img
+
+        @staticmethod
+        def interpolate_along_chi(chi, qr, img):
+            chi_values = np.unique(chi)
+            interpolated_img = np.zeros_like(img)
+
+            for chi_val in chi_values:
+                mask = chi == chi_val
+                qr_values = qr[mask]
+                img_values = img[mask]
+                if len(qr_values) < 2:
+                    continue
+                interpolator = interp1d(qr_values, img_values, kind='linear', fill_value='extrapolate')
+                interpolated_img[mask] = interpolator(qr[mask])
+
+            return interpolated_img
+'''
+
+'''d
+    def azimuth1D(self, img, chi_range, qr_range, sum_direction, discretization=0.1):
+        """
+        Description:
+        Takes a 2D Xarray DataArray and performs azimuthal integration over a specified range of chi and qr values.
+
+        Variables:
+        - img: Input Xarray DataArray with 'qxy' and 'qz' as coordinates.
+        - chi_range: A tuple (chi_min, chi_max) specifying the range of chi values for integration.
+        - qr_range: A tuple (qr_min, qr_max) specifying the range of qr values for integration.
+        - sum_direction: A string specifying the direction along which to sum ('chi' or 'qr').
+        - discretization: A float specifying the step size for the azimuthal sum.
+
+        Attributes:
+        - self.azimuth1D_xr_sum: Stores the resulting 1D DataArray after azimuthal integration.
+        - self.azimuth_mask: Stores the mask used for slicing the image based on chi and qr ranges.
+        - self.original_total_intensity: Stores the original total intensity of the masked image for verification.
+
+        Output:
+        Returns the 1D DataArray after azimuthal integration and stores it in self.azimuth1D_xr_sum.
+        
+        """
+        # Step 1: Input Validation
+        qz_aliases = ['qz', 'q_z', 'QZ', 'Q_z', 'Q_Z']
+        qxy_aliases = ['qxy', 'q_xy', 'QXY', 'Qxy', 'Q_xy', 'Q_XY']
+
+        qz_dim = None
+        qxy_dim = None
+        for dim in img.dims:
+            if dim in qz_aliases:
+                qz_dim = dim
+            if dim in qxy_aliases:
+                qxy_dim = dim
+
+        if qz_dim is None or qxy_dim is None:
+            raise ValueError("The input DataArray must have 'qxy' or an alias and 'qz' or an alias as dimensions.")
+
+        # if 'qxy' not in img.coords or 'qz' not in img.coords:
+        #     raise ValueError("The input DataArray must have 'qxy' and 'qz' as coordinates.")
+
+        chi_min, chi_max = chi_range
+        qr_min, qr_max = qr_range
+
+        if sum_direction not in ['chi', 'qr']:
+            raise ValueError("Invalid sum_direction. Choose either 'chi' or 'qr'.")
+
+        # Step 2: Coordinate Conversion
+        qxy = img[qxy_dim]
+        qz = img[qz_dim]
+
+        # Debugging: Check the range of qxy, qz, chi, and qr
+        print(f"qxy range: {qxy.min().item()}, {qxy.max().item()}")
+        print(f"qz range: {qz.min().item()}, {qz.max().item()}")
+
+        chi = np.arctan2(qz, qxy) * (180 / np.pi)
+        qr = np.sqrt(qxy**2 + qz**2)
+
+        print(f"chi range: {chi.min().item()}, {chi.max().item()}")
+        print(f"qr range: {qr.min().item()}, {qr.max().item()}")
+
+        # Step 3: Masking and Slicing
+        mask = (chi >= chi_min) & (chi <= chi_max) & (qr >= qr_min) & (qr <= qr_max)
+
+        # Debug: Check the min/max values in the mask
+        print(f"Mask min/max: {mask.min().item()}, {mask.max().item()}")
+
+        # Debug: Check the number of True values in the mask
+        print(f"Number of True values in mask: {mask.sum().item()}")
+
+        self.azimuth_mask = mask
+        self.original_total_intensity = img.where(mask).sum().item()
+
+        # Debug: Check original_total_intensity
+        print(f"Original total intensity: {self.original_total_intensity}")
+
+        self.azimuth_mask = mask
+        self.original_total_intensity = img.where(mask).sum().item()
+
+        # Step 4: Azimuthal Summation
+        chi_values = np.arange(chi_min, chi_max, discretization)
+        qr_values = np.arange(qr_min, qr_max, discretization)
+
+        sum_array = np.zeros(len(chi_values) if sum_direction == 'chi' else len(qr_values))
+
+        print(f"Original total intensity: {self.original_total_intensity}")
+
+        # Inside the for loop
+        for i, val in enumerate(chi_values if sum_direction == 'chi' else qr_values):
+            lower_bound = val
+            upper_bound = val + discretization
+            
+            # Debug: Check the lower and upper bounds
+            print(f"Lower bound for index {i}: {lower_bound}, Upper bound for index {i}: {upper_bound}")
+
+            local_mask = mask & (chi >= lower_bound) & (chi < upper_bound) if sum_direction == 'chi' else \
+                        mask & (qr >= lower_bound) & (qr < upper_bound)
+
+            # Debug: Print the number of true values in local_mask
+            print(f"Number of True values in local_mask for index {i}: {local_mask.sum().item()}")
+
+            # Debug: Print the local intensity sum
+            local_intensity = img.where(local_mask).sum().item()
+            print(f"Local intensity sum for index {i}: {local_intensity}")
+
+            # Debug: Print the pixel split factor
+            pixel_split_factor = np.abs(chi - val) / discretization if sum_direction == 'chi' else \
+                                np.abs(qr - val) / discretization
+            print(f"Pixel split factor for index {i}: {pixel_split_factor.sum().item()}")
+
+            sum_array[i] = (local_intensity * pixel_split_factor).sum().item()
+
+        self.azimuth1D_xr_sum = xr.DataArray(sum_array, coords=[chi_values if sum_direction == 'chi' else qr_values], dims=[sum_direction])
+
+        # Debugging prints
+        print(f"Sum of azimuth1D_xr_sum: {self.azimuth1D_xr_sum.sum().item()}")
+
+        if not np.isclose(self.azimuth1D_xr_sum.sum().item(), self.original_total_intensity, atol=1e-6):
+            raise ValueError("Pixel splitting error: Total intensity mismatch.")
+
+        return self.azimuth1D_xr_sum
+
+        '''
