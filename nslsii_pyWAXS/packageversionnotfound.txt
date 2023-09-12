@@ -1,0 +1,3 @@
+-e git+https://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@github.com/ToneyGroupCU/PyHyperScattering.git@efb043cfb3a8fb0fffc2f85d5fa8ed5381f4f2c5#egg=PyHyperScattering
+sasview==5.0.5b1
+srwpy==1.0
