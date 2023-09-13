@@ -1,6 +1,7 @@
 # - Custom Ignores
 .DS_Store
 cif_repo_local/
+examples_local/
 pyWAXS_nslsiijupyterhub/
 
 # Byte-compiled / optimized / DLL files
