@@ -1,4 +1,0 @@
-chxtools @ file:///home/conda/feedstock_root/build_artifacts/chxtools_1627419797920/work
-doct==1.1.0
-eiger-io @ file:///home/conda/feedstock_root/build_artifacts/eiger-io_1626279257118/work
-tomopy @ file:///home/conda/feedstock_root/build_artifacts/libtomo_1667588852430/work
