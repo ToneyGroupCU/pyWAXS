@@ -2,7 +2,7 @@
 .DS_Store
 cif_repo_local/
 examples_local/
-pyWAXS_nslsiijupyterhub/
+nslsii_pyWAXS/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
