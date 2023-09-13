@@ -6,7 +6,6 @@ from tifffile import TiffWriter
 import xarray as xr
 import numpy as np
 from numpy.polynomial.polynomial import Polynomial
-from pathlib import Path
 # -- SciPy Modules 
 from scipy.ndimage.filters import gaussian_filter
 from scipy.ndimage import gaussian_filter
@@ -37,34 +36,12 @@ import matplotlib.pyplot as plt
 import json
 
 class WAXSSearch:
-    def __init__(self, data):
+    def __init__(self):
         self.DoG = None  # Difference of Gaussians (DoG)
         self.maskedDoG = None  # Masked version of DoG
-        self.data = data
-
-        # Convert boolean attributes to integers
-        bool_attrs = ['sinchi', 'qsqr']
-        for attr in bool_attrs:
-            if attr in self.data.attrs:
-                self.data.attrs[attr] = int(self.data.attrs[attr])
-
-        # # Check for and handle NaNs or Infinities in the data
-        # if np.isnan(self.data.values).any() or np.isinf(self.data.values).any():
-        #     print("Warning: Data contains NaNs or Infinities, setting them to zero.")
-        #     self.data.values = np.nan_to_num(self.data.values, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # Get dimension names from original data
-        dims = self.data.dims
-
-        # Now, convert the data into a DataSet
-        self.dataset = xr.Dataset({'intensity': (dims, self.data.values)})
-
-        # Initialize 'peak_positions' DataArray with zeros
-        peak_positions = xr.DataArray(np.zeros_like(self.data.values, dtype=int), coords=self.data.coords, dims=dims)
-        self.dataset['peak_positions'] = peak_positions
 
     # (MAIN) Find Peaks Using Difference of Gaussians: Ver. 1, Recenter -> Cluster
-    def waxssearch_main(self, sigma1=1.0, sigma2=2.0, threshold=0.006, clustering_method='DBSCAN',
+    def waxssearch_main(self, img_xr, sigma1=1.0, sigma2=2.0, threshold=0.006, clustering_method='DBSCAN',
                         eps=1, min_samples=2, k=3, radius=5, edge_percentage=5, stricter_threshold=0.01):
         """
         Find peaks in a 2D array using the Difference of Gaussians (DoG) method.
@@ -86,8 +63,6 @@ class WAXSSearch:
         - img_xr (xarray DataArray): The input array with peak information stored in its attrs attribute.
         """
         
-        img_xr = self.data
-
         # Validate sigma values
         if sigma2 <= sigma1 or sigma1 <= 0 or sigma2 <= 0:
             raise ValueError("Both sigma1 and sigma2 must be positive numbers and sigma2 must be greater than sigma1.")
@@ -132,52 +107,13 @@ class WAXSSearch:
 
         print("Number of final peaks:", np.count_nonzero(~np.isnan(peaks)))
 
-        # Initialize a new DataArray for peak positions with same dimensions and coordinates as the original data
-        peak_positions = xr.DataArray(np.full_like(img_xr, np.nan), coords=img_xr.coords, dims=img_xr.dims)
-
-        # Retrieve the names of the coordinates dynamically
-        coord_names = list(img_xr.dims)
-
-        # Fill the peak_positions DataArray
-        y_coords, x_coords = np.where(~np.isnan(peaks))
-
-        # Get actual coordinate values
-        y_actual_coords = img_xr.coords[coord_names[0]].values
-        x_actual_coords = img_xr.coords[coord_names[1]].values
-
-        for y_idx, x_idx in zip(y_coords, x_coords):
-            y_val = y_actual_coords[y_idx]
-            x_val = x_actual_coords[x_idx]
-            
-            if y_val in img_xr.coords[coord_names[0]].values and x_val in img_xr.coords[coord_names[1]].values:
-                peak_positions.loc[{coord_names[0]: y_val, coord_names[1]: x_val}] = 1  # Use dynamic coordinate names
-
-        # Add peak search parameters as attributes to the DataArray
-        peak_positions.attrs['threshold'] = threshold
-        peak_positions.attrs['eps'] = eps
-        peak_positions.attrs['min_samples'] = min_samples
-        peak_positions.attrs['sigma1'] = sigma1
-        peak_positions.attrs['sigma2'] = sigma2
-        peak_positions.attrs['clustering_method'] = clustering_method
-        peak_positions.attrs['k'] = k
-        peak_positions.attrs['radius'] = radius
-        peak_positions.attrs['edge_percentage'] = edge_percentage
-        peak_positions.attrs['stricter_threshold'] = stricter_threshold
-
-        # Add this new DataArray to the DataSet
-        self.dataset['peak_positions'] = peak_positions.astype(int)
-
-        # Store peak information in the attrs attribute of the original DataArray
+        # Initialize output DataArray for peaks
         peaks_xr = xr.DataArray(peaks, coords=img_xr.coords, dims=img_xr.dims)
+        
+        # Store peak information in the attrs attribute of the original DataArray
         img_xr.attrs['peaks'] = peaks_xr
-
-        # Add this new DataArray to the DataSet
-        self.dataset['peak_positions'] = peak_positions.astype(int)
-
-        # Replace all NaN values in the DataSet with 0
-        self.dataset = self.dataset.fillna(0)
-
-        return self.dataset
+        
+        return img_xr
 
     # (STEP 1) Normalization: The input DataArray is normalized to '1' at the maximum value.
     def normalize_data(self, img_xr):
@@ -315,63 +251,6 @@ class WAXSSearch:
 
 ## -- METHODS FOR DISPLAYING OUTPUTS -- ##
     #  Display Image Output (w/ peaks & DoG): Modified version of the display_image method to overlay scatter points for peak locations
-    def display_image_with_peaks_and_DoG(self, dataset, title='Image with Peaks', cmap='turbo'):
-        plt.close('all')
-        plt.figure(figsize=(15, 7))
-
-        DoG = self.DoG
-        extent = None
-
-        img = dataset['intensity']
-        img_values = img.values
-        peaks = dataset['peak_positions']
-        coords_names = list(img.coords.keys())
-        
-        if len(coords_names) == 2:
-            extent = [
-                img.coords[coords_names[1]].min(),
-                img.coords[coords_names[1]].max(),
-                img.coords[coords_names[0]].min(),
-                img.coords[coords_names[0]].max()
-            ]
-            ylabel, xlabel = coords_names
-
-        # Calculate vmin and vmax for the original image
-        vmin = np.nanpercentile(img_values, 10)
-        vmax = np.nanpercentile(img_values, 99)
-
-        plt.subplot(1, 2, 1)
-        plt.imshow(np.flipud(img_values),
-                cmap=cmap,
-                vmin=vmin,  # Use calculated vmin and vmax
-                vmax=vmax,  
-                extent=extent,
-                aspect='auto')
-        plt.colorbar()
-        plt.title(f"{title} - Original")
-        plt.xlabel(xlabel)
-        plt.ylabel(ylabel)
-
-        if peaks is not None:
-            peak_coords = np.column_stack(np.where(peaks.values == 1))
-            peak_x_values = peaks.coords[coords_names[1]].values[peak_coords[:, 1]]
-            peak_y_values = peaks.coords[coords_names[0]].values[peak_coords[:, 0]]
-            plt.scatter(peak_x_values, peak_y_values, c='red', marker='o')
-
-        plt.subplot(1, 2, 2)
-        plt.imshow(np.flipud(DoG),
-                cmap=cmap,
-                extent=extent,
-                aspect='auto')
-        plt.colorbar()
-        plt.title(f"{title} - DoG")
-        plt.xlabel(xlabel)
-        plt.ylabel(ylabel)
-
-        plt.tight_layout()
-        plt.show()
-
-    '''
     def display_image_with_peaks_and_DoG(self, img, title='Image with Peaks', cmap='turbo'):
         plt.close('all')
         plt.figure(figsize=(15, 7))
@@ -430,7 +309,6 @@ class WAXSSearch:
 
         plt.tight_layout()
         plt.show()
-    '''
 
     #  Display Image Output (w/ peaks): Modified version of the display_image method to overlay scatter points for peak locations
     def display_image_with_peaks(self, img, title='Image with Peaks', cmap='turbo'):
@@ -531,36 +409,6 @@ class WAXSSearch:
         ds = xr.Dataset({'intensity': data_xr, 'class_attrs': class_attrs_xr})
         ds.to_zarr(file_path, mode='w')
 
-    def save_to_netcdf(self, file_path, default_filename="output.nc"):
-        """
-        Save the DataSet to an HDF5 NETCDF file.
-
-        Parameters:
-        - file_path (str or pathlib.Path): The path where the HDF5 NETCDF file will be saved.
-        """
-        if isinstance(file_path, (str, Path)):
-            path = Path(file_path)
-            if path.is_dir():
-                path = path / default_filename
-            self.dataset.to_netcdf(path, engine='h5netcdf')
-        else:
-            raise ValueError("Invalid file path. Must be a string or a pathlib.Path object.")
-
-    def load_from_netcdf(self, file_path):
-        """
-        Load the DataSet from an HDF5 NETCDF file.
-
-        Parameters:
-        - file_path (str or pathlib.Path): The path to the HDF5 NETCDF file to be loaded.
-
-        Returns:
-        - ds (xarray.Dataset): The loaded DataSet.
-        """
-        if isinstance(file_path, (str, Path)):
-            self.dataset = xr.open_dataset(file_path, engine='h5netcdf')
-        else:
-            raise ValueError("Invalid file path. Must be a string or a pathlib.Path object.")
-    
 '''
 ## -- PeakSearch for an Xarray DataSet    
 class PeakSearch2D:
