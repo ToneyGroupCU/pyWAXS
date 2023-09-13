@@ -18,9 +18,9 @@ class WAXSReverse():
     def __init__(self) -> None:
         
         # experiment data qxy range, we will get this WAXSSearch() class instance at some point and initialize to null range here.
-        self.qxy_exp=[0,4]
+        self.qxy_exp = [0,4]
         # experiment data qz range, we will get this WAXSSearch() class instance at some point and initialize to null range here.
-        self. qz_exp=[0,4]
+        self.qz_exp = [0,4]
         
         # Bragg peak positions from WAXSSearch() method experiment output, we will get this WAXSSearch() at some point and initialize to null range here.
         Bragg_peaks_exp=[
@@ -62,8 +62,8 @@ class WAXSReverse():
     def main():
         # total_distance0=99999999
         for i in range(500000):
-            b1,b2,b3=self.make_cif(Bragg_peaks_exp)
-            qxy,qz=self.Bragg_peaks(b1,b2,b3,hkl)
+            b1,b2,b3 = self.make_cif(Bragg_peaks_exp)
+            qxy,qz = self.Bragg_peaks(b1,b2,b3,hkl)
             qxy=qxy.ravel()
             qz=qz.ravel()
             combined = np.column_stack((qxy, qz))
