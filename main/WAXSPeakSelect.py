@@ -50,6 +50,7 @@ class MyNavigationToolbar(NavigationToolbar2QT):
         self.window.deactivateAddPoint()
         self.window.deactivateRemovePoint()
 
+
 class MyCanvas(FigureCanvas):
     def __init__(self):
         ''' 
@@ -434,6 +435,24 @@ class MyCanvas(FigureCanvas):
             self.texts.pop(index)
             self.draw()
 
+    def export_data(self, filepath):
+        ''' 
+        export_data:
+            Purpose:
+            Exports the modified intensity and peak_positions to a netCDF4 (h5netcdf) file.
+
+            Implementation:
+            Uses xarray to save the DataArrays to a file.
+
+            Considerations:
+            Filepath should be valid and writable.
+            
+            Attributes:
+            intensity, peak_positions
+        '''
+        ds = xr.Dataset({'intensity': self.intensity, 'peak_positions': self.peak_positions})
+        ds.to_netcdf(filepath, engine='h5netcdf')
+
 class MyWindow(QMainWindow):
     def __init__(self):
         ''' 
@@ -495,6 +514,9 @@ class MyWindow(QMainWindow):
         
         btn_highlight = QPushButton('Highlight Selection')
         btn_highlight.clicked.connect(self.activateHighlight)
+    
+        btn_export = QPushButton('Export Data')
+        btn_export.clicked.connect(self.exportData)
         
         # Create a grid layout
         layout = QGridLayout()
@@ -505,6 +527,7 @@ class MyWindow(QMainWindow):
         vlayout.addWidget(btn_add_point)
         vlayout.addWidget(btn_remove_point)
         vlayout.addWidget(btn_highlight)
+        vlayout.addWidget(btn_export)
         button_group.setLayout(vlayout)
 
         # Place widgets in the grid layout
@@ -668,7 +691,29 @@ class MyWindow(QMainWindow):
         '''
 
         self.canvas.setup_rectangle_selector()
-        
+
+    def exportData(self):
+        ''' 
+        exportData:
+            Purpose:
+            Opens a file dialog for exporting data and calls the export_data method from MyCanvas.
+
+            Implementation:
+            Uses QFileDialog to get the filepath and then invokes MyCanvas.export_data.
+
+            Considerations:
+            Assumes that MyCanvas instance is available as self.canvas.
+            
+            Attributes:
+            ds
+        '''
+        options = QFileDialog.Options()
+        filepath, _ = QFileDialog.getSaveFileName(self, "Export Data", "", "NetCDF Files (*.nc);;All Files (*)", options=options)
+        if filepath:
+            if not filepath.endswith('.nc'):
+                filepath += '.nc'
+            self.canvas.export_data(filepath)
+
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     window = MyWindow()
