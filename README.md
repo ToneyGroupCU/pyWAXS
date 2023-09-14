@@ -2,7 +2,9 @@
 Our group's Python-based GIWAXS data reduction and analysis package.
 
 Toney Group, University of Colorado Boulder.
+
 Developers: Keith White, Zihan Zhang, Andrew Levin
+
 Updated | 09/13/2023
 
 ## Getting Setup
@@ -61,7 +63,9 @@ Now you can run the .py script with IPython:
     python3 WAXSVisualizer.py
 ```
 #### WAXSPeakSelect.py: 
-Allows you to load NETCDF4 (HDF5) files that we export from WAXSNotebook.ipynb (see internal notebook documentation and notes). After loading your experiment package, you 
+Used to Add/Remove peaks that the automated peak finding algorithm did not find, or found accidentally.
+
+Allows you to load NETCDF4 (HDF5) files contained 2D reduced image data and peak position data. These files are exported from the WAXSNotebook.ipynb (see internal notebook documentation and notes). 
 
 Similarly for WAXSPeakSelect.py, we can run the script by navigating to the file directory in our terminal and running:
 ```bash
