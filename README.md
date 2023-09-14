@@ -1,9 +1,73 @@
 # pyWAXS
-Python-based GIWAXS image analysis software package from the Toney Group, University of Colorado Boulder.
+Our group's Python-based GIWAXS data reduction and analysis package.
 
-UPDATED: 08/24/2023
-# Developer Notes on File Structure/Organization
--- MAIN FOLDER --
+Toney Group, University of Colorado Boulder.
+Developers: Keith White, Zihan Zhang, Andrew Levin
+Updated | 09/13/2023
+
+## Getting Setup
+Navigate in your terminal to where you want to save the repository:
+```bash
+    cd /path/to/githubrepositories
+```
+
+Clone the repository to your local directory:
+```bash
+    git clone https://github.com/ToneyGroupCU/pyWAXS.git
+```
+
+Navigate to the newly cloned repo:
+```bash
+    cd pyWAXS
+```
+
+Create a conda virtual environment from the pyWAXS.yml file:
+```bash
+    conda env create -f pyWAXS.yml
+```
+
+This will install all conda-forge and pip dependencies. 
+
+Once the environment is solved, open the repository in VS Code (recommended) or your preferred IDE.
+
+## Getting Started
+At present, the files you will be working with are stored in the 'main' folder. The 'refactored' folder contains code segments that are actively being recycled, repurposed, or discarded.
+
+Open the file:
+
+```python
+    WAXSNotebook.ipynb
+```
+
+to begin. You'll want to update the file paths to reflect the accurate basePath directory. This is explained in the notebook. 
+
+## UI Applications
+IPython is a console installed in the pyWAXS environment that allows you to run .py scripts as applications from the command line.
+
+The .py scripts listed below can be run as executables:
+    - WAXSVisualizer.py: (Previously EasyGIWAXS.py) Allows you to load your GIWAXS data to perform ROI (region-of-interest) based integrations.
+
+    To run this script, create a new tab in the terminal (CTRL + T) navigate and the 'main' pyWAXS directory:
+```bash
+    cd /path/to/githubrepositories/pyWAXS/main
+```
+    Activate the pyWAXS environment:
+```bash
+    conda activate pyWAXS
+```
+    Now you can run the .py script with IPython:
+```bash
+    python3 WAXSVisualizer.py
+```
+    - WAXSPeakSelect.py: Allows you to load NETCDF4 (HDF5) files that we export from WAXSNotebook.ipynb (see internal notebook documentation and notes). After loading your experiment package, you 
+
+Similarly for WAXSPeakSelect.py, we can run the script by navigating to the file directory in our terminal and running:
+```bash
+    python3 WAXSPeakSelect.py
+```
+
+<!-- # Developer Notes on File Structure/Organization -->
+<!-- -- MAIN FOLDER --
 Folder Name: pyWAXS_main
 Description: Main class files - .py scripts stored here should be a composite of scripts/notebooks found in all other folders. These will be the primary working classes. Please do not push to this unless you are confident in the updates you are adding.
 
@@ -28,7 +92,7 @@ Folder Name: pyWAXS_reduction
 Description: Scripts for reducing GIWAXS data, there is some overlap here with the NSLS-II JupyterHub data reduction scripts.
 
 Folder Name: pyWAXS_simulation
-Description: Scripts for diffraction image simulation, essentially Zihan's 2D_diffraction repository on his personal Github page.
+Description: Scripts for diffraction image simulation, essentially Zihan's 2D_diffraction repository on his personal Github page. -->
 
 <!-- Folder Name: pyWAXS_nslsiijupyterhub
 Description: Scripts adapted from the PyHyperScattering notebooks/code that are also implemented in the pyHyperScattering CMS branch repo on our group page. -->

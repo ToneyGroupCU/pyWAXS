@@ -93,6 +93,7 @@ dependencies:
   - grpc-cpp=1.51.1=h88f4db0_0
   - gst-plugins-base=1.22.3=hb5d3a86_1
   - gstreamer=1.22.3=h53e17e3_1
+  - h5netcdf=1.2.0=pyhd8ed1ab_0
   - h5py=3.8.0=nompi_py311hcf977c2_101
   - harfbuzz=6.0.0=h08f8713_0
   - hdf5=1.14.0=nompi_hbf0aa07_103
