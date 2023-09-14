@@ -47,29 +47,39 @@ Now you should read through the notebook as a guide. You'll want to update the f
 IPython is a console installed in the pyWAXS environment that allows you to run .py scripts as applications from the command line.
 
 The .py scripts listed below can be run as executables:
-#### WAXSVisualizer.py: 
-(Previously EasyGIWAXS.py) Allows you to load your GIWAXS data to perform ROI (region-of-interest) based integrations.
+
+#### pyWAXS.py: 
+- Create Project File (Load Data, Mask, PONI)
+- Run PyFAI Calibration GUI Directly (will be containerized eventually)
+- Run the Automatic Peak Finder (Coming Soon)
+- Run a GIWAXS Simulation (Coming Soon)
+- Use to Add/Remove peaks that the automated peak finding algorithm did not find, or found accidentally.
+- Export your Project File.
+- Reload previous Project Files.
+
+Allows you to load NETCDF4 (HDF5) files contained 2D reduced image data and peak position data. These files are exported from the WAXSNotebook.ipynb (see internal notebook documentation and notes). 
 
 To run this script, create a new tab in the terminal (CTRL + T) navigate and the 'main' pyWAXS directory:
 ```bash
     cd /path/to/githubrepositories/pyWAXS/main
 ```
+
 Activate the pyWAXS environment:
 ```bash
     conda activate pyWAXS
 ```
-Now you can run the .py script with IPython:
+
+For pyWAXS.py, we can run the script by navigating to the file directory in our terminal and running:
+```bash
+    python3 pyWAXS.py
+```
+
+#### WAXSVisualizer.py: 
+(Previously EasyGIWAXS.py) Allows you to load your GIWAXS data to perform ROI (region-of-interest) based integrations. Will be merged into pyWAXS.py as a connected Window object at some point.
+
+Run the .py script with IPython:
 ```bash
     python3 WAXSVisualizer.py
-```
-#### WAXSPeakSelect.py: 
-Used to Add/Remove peaks that the automated peak finding algorithm did not find, or found accidentally.
-
-Allows you to load NETCDF4 (HDF5) files contained 2D reduced image data and peak position data. These files are exported from the WAXSNotebook.ipynb (see internal notebook documentation and notes). 
-
-Similarly for WAXSPeakSelect.py, we can run the script by navigating to the file directory in our terminal and running:
-```bash
-    python3 WAXSPeakSelect.py
 ```
 
 <!-- # Developer Notes on File Structure/Organization -->

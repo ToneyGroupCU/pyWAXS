@@ -1,4 +1,4 @@
-name: pyGIXS
+name: pyWAXS
 channels:
   - conda-forge
   - defaults

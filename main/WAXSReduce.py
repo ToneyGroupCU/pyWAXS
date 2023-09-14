@@ -47,7 +47,9 @@ class WAXSReduce:
                  metadata_keylist=[], 
                  inplane_config: str = 'q_xy', 
                  energy: float = 12.7,
-                 zarrPath: Union[str, pathlib.Path] = None,
+                 incident_angle: float = 0.3,
+                #  zarrPath: Union[str, pathlib.Path] = None,
+                 hdf5Path: Union[str, pathlib.Path] = None,
                  projectName: str = 'test'):
        
         """
@@ -67,6 +69,7 @@ class WAXSReduce:
         self.tiffPath = tiffPath # datatype: 'str' or pathlib variable, TIFF image filepath
         self.inplane_config = inplane_config # datatype: 'str', in-plane scattering axes label
         self.energy = energy # datatype: float, energy of your X-rays in keV
+        self.incident_angle = incident_angle
 
         # -- METADATA ATTRIBUTES -- ##
         self.metadata_keylist = metadata_keylist # datatype: list, 'md_naming_scheme'
@@ -76,17 +79,17 @@ class WAXSReduce:
         self.rawtiff_np = None # datatype: numpy array, RAW TIFF (numpy)
         self.rawtiff_xr = None # datatype: xarray DataArray, RAW TIFF (xarray)
         
-        # Check if zarrPath is provided
-        if zarrPath is not None:
-            self.zarrPath = zarrPath
-            if projectName:
-                self.projectName = projectName
-                self.loadzarr(zarrPath = self.zarrPath, 
-                              projectName = self.projectName)
-        else:
-            # Check that the required parameters are provided
-            if poniPath is None or maskPath is None or tiffPath is None:
-                raise ValueError("Must provide either zarrPath or poniPath, maskPath, and tiffPath.")
+        # # Check if zarrPath is provided
+        # if zarrPath is not None:
+        #     self.zarrPath = zarrPath
+        #     if projectName:
+        #         self.projectName = projectName
+        #         self.loadzarr(zarrPath = self.zarrPath, 
+        #                       projectName = self.projectName)
+        # else:
+        #     # Check that the required parameters are provided
+        #     if poniPath is None or maskPath is None or tiffPath is None:
+        #         raise ValueError("Must provide either zarrPath or poniPath, maskPath, and tiffPath.")
 
         # - Load the Single Image
         self.loadSingleImage(self.tiffPath)
@@ -107,10 +110,6 @@ class WAXSReduce:
         self.smoothed_img = None # Store Smoothed Image
         self.normalized_img = None # Store Normalized Image
         self.snrtemp = None # Temporary signal-to-noise ratio 
-
-        # -- Additional Class Attributes -- ##
-        # self.DoG = None # Difference of Gaussians 
-        # self.maskedDoG = None # masked difference of Gaussians
 
 ## --- DATA LOADING & METADATA EXTRACTION --- ##
     # -- Image Loading
@@ -177,66 +176,66 @@ class WAXSReduce:
 
 ## --- PROJECT EXPORTING & IMPORTING --- ##
     # -- Exports the current class instantiation when called.
-    def exportzarr(self, zarrPath: Union[str, pathlib.Path], projectName: str):
-        # Create the project directory
-        project_path = pathlib.Path(zarrPath) / projectName
-        if project_path.exists():
-            # Handle existing project folder (e.g., ask for confirmation or raise an error)
-            raise FileExistsError(f"Project folder '{project_path}' already exists. Choose a different project name or remove the existing folder.")
-        project_path.mkdir(parents=True, exist_ok=False)  # exist_ok=False ensures that an error is raised if the folder exists
+    # def exportzarr(self, zarrPath: Union[str, pathlib.Path], projectName: str):
+    #     # Create the project directory
+    #     project_path = pathlib.Path(zarrPath) / projectName
+    #     if project_path.exists():
+    #         # Handle existing project folder (e.g., ask for confirmation or raise an error)
+    #         raise FileExistsError(f"Project folder '{project_path}' already exists. Choose a different project name or remove the existing folder.")
+    #     project_path.mkdir(parents=True, exist_ok=False)  # exist_ok=False ensures that an error is raised if the folder exists
 
-        # Save xarray DataArrays as Zarr files and TIFF images
-        for key in ['rawtiff_xr', 'reciptiff_xr', 'cakedtiff_xr']:
-            ds = self.__dict__[key].to_dataset(name=key)
-            ds_path = project_path / f"{key}.zarr"
-            ds.to_zarr(ds_path)
+    #     # Save xarray DataArrays as Zarr files and TIFF images
+    #     for key in ['rawtiff_xr', 'reciptiff_xr', 'cakedtiff_xr']:
+    #         ds = self.__dict__[key].to_dataset(name=key)
+    #         ds_path = project_path / f"{key}.zarr"
+    #         ds.to_zarr(ds_path)
 
-            # Convert the xarray DataArray to a numpy array and save as TIFF
-            tiff_image = ds[key].values
-            tiff_path = project_path / f"{projectName}_{key}.tiff"
-            with TiffWriter(str(tiff_path)) as tif:
-                tif.save(tiff_image.astype(np.uint16))  # Adjust dtype as needed
+    #         # Convert the xarray DataArray to a numpy array and save as TIFF
+    #         tiff_image = ds[key].values
+    #         tiff_path = project_path / f"{projectName}_{key}.tiff"
+    #         with TiffWriter(str(tiff_path)) as tif:
+    #             tif.save(tiff_image.astype(np.uint16))  # Adjust dtype as needed
 
-        # Save other attributes to a JSON file
-        attributes_to_save = {
-            'basePath': str(self.basePath),
-            'poniPath': str(self.poniPath),
-            'maskPath': str(self.maskPath),
-            'tiffPath': str(self.tiffPath),
-            'metadata_keylist': self.metadata_keylist,
-            'attribute_dict': self.attribute_dict,
-            'energy': self.energy,
-        }
-        json_path = project_path / "attributes.json"
-        with open(json_path, 'w') as file:
-            json.dump(attributes_to_save, file)
+    #     # Save other attributes to a JSON file
+    #     attributes_to_save = {
+    #         'basePath': str(self.basePath),
+    #         'poniPath': str(self.poniPath),
+    #         'maskPath': str(self.maskPath),
+    #         'tiffPath': str(self.tiffPath),
+    #         'metadata_keylist': self.metadata_keylist,
+    #         'attribute_dict': self.attribute_dict,
+    #         'energy': self.energy,
+    #     }
+    #     json_path = project_path / "attributes.json"
+    #     with open(json_path, 'w') as file:
+    #         json.dump(attributes_to_save, file)
 
-    # -- Imports the current class instantiation when called.
-    def loadzarr(self, zarrPath: Union[str, pathlib.Path], projectName: str):
-        # Define the project directory
-        project_path = pathlib.Path(zarrPath) / projectName
+    # # -- Imports the current class instantiation when called.
+    # def loadzarr(self, zarrPath: Union[str, pathlib.Path], projectName: str):
+    #     # Define the project directory
+    #     project_path = pathlib.Path(zarrPath) / projectName
 
-        # Load xarray DataArrays from Zarr files
-        for key in ['rawtiff_xr', 'reciptiff_xr', 'cakedtiff_xr']:
-            ds_path = project_path / f"{key}.zarr"
-            ds = xr.open_zarr(ds_path)
-            self.__dict__[key] = ds[key]
+    #     # Load xarray DataArrays from Zarr files
+    #     for key in ['rawtiff_xr', 'reciptiff_xr', 'cakedtiff_xr']:
+    #         ds_path = project_path / f"{key}.zarr"
+    #         ds = xr.open_zarr(ds_path)
+    #         self.__dict__[key] = ds[key]
 
-        # Load other attributes from the JSON file
-        json_path = project_path / "attributes.json"
-        with open(json_path, 'r') as file:
-            attributes = json.load(file)
-            self.basePath = pathlib.Path(attributes['basePath'])
-            self.poniPath = pathlib.Path(attributes['poniPath'])
-            self.maskPath = pathlib.Path(attributes['maskPath'])
-            self.tiffPath = pathlib.Path(attributes['tiffPath'])
-            self.metadata_keylist = attributes['metadata_keylist']
-            self.attribute_dict = attributes['attribute_dict']
-            self.energy = attributes['energy']
+    #     # Load other attributes from the JSON file
+    #     json_path = project_path / "attributes.json"
+    #     with open(json_path, 'r') as file:
+    #         attributes = json.load(file)
+    #         self.basePath = pathlib.Path(attributes['basePath'])
+    #         self.poniPath = pathlib.Path(attributes['poniPath'])
+    #         self.maskPath = pathlib.Path(attributes['maskPath'])
+    #         self.tiffPath = pathlib.Path(attributes['tiffPath'])
+    #         self.metadata_keylist = attributes['metadata_keylist']
+    #         self.attribute_dict = attributes['attribute_dict']
+    #         self.energy = attributes['energy']
 
-        # Rebuild GIXSTransformObj and load single image
-        self.GIXSTransformObj = self.detCorrObj()
-        self.loadSingleImage(self.tiffPath)
+    #     # Rebuild GIXSTransformObj and load single image
+    #     self.GIXSTransformObj = self.detCorrObj()
+    #     self.loadSingleImage(self.tiffPath)
 
 ## --- IMAGE PROCESSING (REQUIRED) --- ##
     # -- Apply Image Corrections
