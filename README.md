@@ -39,7 +39,7 @@ Open the file:
     WAXSNotebook.ipynb
 ```
 
-to begin. You'll want to update the file paths to reflect the accurate basePath directory. This is explained in the notebook. 
+Now you should read through the notebook as a guide. You'll want to update the file paths to reflect the accurate basePath directory. This will be explained in the notebook. 
 
 ## UI Applications
 IPython is a console installed in the pyWAXS environment that allows you to run .py scripts as applications from the command line.
@@ -48,23 +48,23 @@ The .py scripts listed below can be run as executables:
     - WAXSVisualizer.py: (Previously EasyGIWAXS.py) Allows you to load your GIWAXS data to perform ROI (region-of-interest) based integrations.
 
     To run this script, create a new tab in the terminal (CTRL + T) navigate and the 'main' pyWAXS directory:
-```bash
-    cd /path/to/githubrepositories/pyWAXS/main
-```
+    ```bash
+        cd /path/to/githubrepositories/pyWAXS/main
+    ```
     Activate the pyWAXS environment:
-```bash
-    conda activate pyWAXS
-```
+    ```bash
+        conda activate pyWAXS
+    ```
     Now you can run the .py script with IPython:
-```bash
-    python3 WAXSVisualizer.py
-```
+    ```bash
+        python3 WAXSVisualizer.py
+    ```
     - WAXSPeakSelect.py: Allows you to load NETCDF4 (HDF5) files that we export from WAXSNotebook.ipynb (see internal notebook documentation and notes). After loading your experiment package, you 
 
-Similarly for WAXSPeakSelect.py, we can run the script by navigating to the file directory in our terminal and running:
-```bash
-    python3 WAXSPeakSelect.py
-```
+    Similarly for WAXSPeakSelect.py, we can run the script by navigating to the file directory in our terminal and running:
+    ```bash
+        python3 WAXSPeakSelect.py
+    ```
 
 <!-- # Developer Notes on File Structure/Organization -->
 <!-- -- MAIN FOLDER --
