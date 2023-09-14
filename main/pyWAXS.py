@@ -21,6 +21,7 @@ from pathlib import Path
 from WAXSReduce import WAXSReduce
 from WAXSReduce import Integration1D
 
+# File Dialog: Create New Project
 class CreateProjectDialog(QDialog):
     waxs_reduce_created = pyqtSignal(object)  # Signal carrying the WAXSReduce instance
 
@@ -262,6 +263,7 @@ class CreateProjectDialog(QDialog):
             self.hdf5Path = Path(folder)
             self.hdf5PathLabel.setText(str(self.hdf5Path))
 
+# Toolbar @ the top of the window
 class MyNavigationToolbar(NavigationToolbar2QT):
     def __init__(self, canvas, parent, coordinates=True):
         ''' 
@@ -329,6 +331,7 @@ class MyNavigationToolbar(NavigationToolbar2QT):
                 energy, incident_angle, hdf5Path, projectName
             )
 
+    '''
     # Modified load_project method to have similar functionality as loadData
     def load_project(self):
         options = QFileDialog.Options()
@@ -342,22 +345,92 @@ class MyNavigationToolbar(NavigationToolbar2QT):
             max_intensity = int(max_intensity.values)
             self.window.slider_vmin.setMaximum(max_intensity)
             self.window.slider_vmax.setMaximum(max_intensity)
+    
+    '''
+
+    def load_project(self):
+        # Check if a project is already loaded
+        if hasattr(self.window, 'ds') and self.window.ds is not None:
+            reply = QMessageBox.question(self.window, 'Save Current Project', 
+                                        'Would you like to save the current project before loading a new one?', 
+                                        QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, 
+                                        QMessageBox.Cancel)
+
+            if reply == QMessageBox.Yes:
+                options = QFileDialog.Options()
+                filepath, _ = QFileDialog.getSaveFileName(self.window, "Save Current Project Data", "", "NetCDF Files (*.nc);;All Files (*)", options=options)
+                if filepath:
+                    if not filepath.endswith('.nc'):
+                        filepath += '.nc'
+                    try:
+                        self.window.canvas.export_data(filepath)
+                    except Exception as e:
+                        QMessageBox.critical(self.window, "Error", f"An error occurred while saving: {e}", QMessageBox.Ok)
+                        return  # If save fails, don't proceed to load a new project
+
+            elif reply == QMessageBox.Cancel:
+                return  # Don't proceed to load a new project
+
+            # Clear the current dataset only if we are sure that a new project will be loaded
+            self.window.ds = None
+
+        # Load a new project
+        options = QFileDialog.Options()
+        file, _ = QFileDialog.getOpenFileName(self.window, "Load Project Data", "", "NetCDF Files (*.nc);;All Files (*)", options=options)
+        if file:
+            try:
+                
+                # Initialize the plot to a clean state
+                self.window.canvas.init_plot() # clear the plot
+                self.window.ds = None # clear the dataset
+
+                # Load the new dataset
+                new_ds = xr.open_dataset(file, engine='h5netcdf') # load the dataset
+                print(new_ds['intensity'])
+                print(new_ds['peak_positions'])
+
+                self.window.ds = new_ds # set the dataset 
+
+                # Plotting: Surround with try-except to catch errors
+                try:
+                    if new_ds['intensity'] is None or new_ds['peak_positions'] is None:
+                        raise ValueError("Intensity or peak positions are None.")
+                    self.window.canvas.plot_data(new_ds['intensity'], new_ds['peak_positions'])
+                except Exception as e:
+                    QMessageBox.critical(self.window, "Error", f"An error occurred while plotting: {e}", QMessageBox.Ok)
+                    return  # If plotting fails, don't proceed
+
+                # Update sliders using the newly loaded dataset
+                max_intensity = new_ds['intensity'].max()
+                max_intensity = int(max_intensity.values)
+                self.window.slider_vmin.setMaximum(max_intensity)
+                self.window.slider_vmax.setMaximum(max_intensity)
+                
+                # # If everything went well, update the current dataset
+                # self.window.ds = new_ds
+
+            except Exception as e:
+                QMessageBox.critical(self.window, "Error", f"An error occurred while loading the project: {e}", QMessageBox.Ok)
 
     # Opens PyFAI-calib2 through a subprocess routine. Assumes your environment 
     def create_calibrant(self):
         try:
-            subprocess.run(["bash", "-c", "eval \"$(conda shell.bash hook)\" && conda activate pyGIXS && pyFAI-calib2"])
+            subprocess.run(["bash", "-c", "eval \"$(conda shell.bash hook)\" && conda activate pyWAXS && pyFAI-calib2"])
         except Exception as e:
             print(f"An error occurred: {e}")
         
-    def load_poni(self):
-        print('Load PONI button clicked!')
-        
-    def load_mask(self):
-        print('Load MASK button clicked!')
-        
     def export_project(self):
-        print('Export Project button clicked!')
+        options = QFileDialog.Options()
+        filepath, _ = QFileDialog.getSaveFileName(self.window, "Export Project Data", "", "NetCDF Files (*.nc);;All Files (*)", options=options)
+        
+        if filepath:
+            if not filepath.endswith('.nc'):
+                filepath += '.nc'
+            try:
+                self.window.canvas.export_data(filepath)
+                QMessageBox.information(self.window, "Success", "Project data exported successfully.", QMessageBox.Ok)
+            except Exception as e:
+                QMessageBox.critical(self.window, "Error", f"An error occurred while exporting: {e}", QMessageBox.Ok)
 
     def trigger_tool(self, *args, **kwargs):
         ''' 
@@ -379,6 +452,7 @@ class MyNavigationToolbar(NavigationToolbar2QT):
         self.window.deactivateAddPoint()
         self.window.deactivateRemovePoint()
 
+# Figure Layout & Control Methods for Figure
 class MyCanvas(FigureCanvas):
     def __init__(self):
         ''' 
@@ -419,12 +493,34 @@ class MyCanvas(FigureCanvas):
         self.highlighted_indices = []  # Initialize it here
         self.rectangles = []  # To keep track of rectangles
         self.selected_rect = None  # To keep track of the selected rectangle
-        # self.facecolors = None  # To keep track of the colors of scatter points
         self.RS = None  # Add this line to create a new attribute for RectangleSelector
         self.texts = []  # To keep track of 'X' text objects
         self.cid_pick = self.mpl_connect('pick_event', self.on_rect_pick)
-
         self.colorbar = None  # Initialize the colorbar attribute
+
+    def init_plot(self):
+        '''Add an init_plot method to initialize a blank plot with no data. This can be called to reset the plot before adding new data.'''
+        self.ax.clear()
+        
+        # Clear or reset other attributes
+        self.peak_positions = None
+        self.intensity = None
+        self.scatter = None
+        self.highlighted_points.clear()
+        self.highlighted_indices.clear()
+        self.rectangles.clear()
+        self.selected_rect = None
+        if self.RS:
+            self.RS.set_active(False)
+            self.RS = None
+        self.texts.clear()
+        
+        # Remove the colorbar if it exists
+        if self.colorbar:
+            self.colorbar.remove()
+            self.colorbar = None
+        
+        self.draw()
 
     def plot_data(self, intensity, peak_positions):
         ''' 
@@ -448,7 +544,28 @@ class MyCanvas(FigureCanvas):
             facecolors (numpy.ndarray): Array to keep track of the colors of scatter points.
             colorbar (matplotlib.colorbar.Colorbar): Colorbar for the 2D heatmap.
         '''
+        # self.init_plot()  # Reset the plot
+
+        # Debugging statements
+        print(f"Intensity DataArray: {intensity}")
+        print(f"Peak Positions DataArray: {peak_positions}")
+        print(f"Colorbar: {self.colorbar}")
+        print(f"Scatter Plot Object: {self.scatter}")
         
+        # Validation
+        if intensity is None:
+            print("Error: Intensity is None.")
+            return
+        if peak_positions is None:
+            print("Error: Peak Positions are None.")
+            return
+        if not isinstance(intensity, xr.DataArray):
+            print("Error: Intensity is not an xarray DataArray.")
+            return
+        if not isinstance(peak_positions, xr.DataArray):
+            print("Error: Peak Positions is not an xarray DataArray.")
+            return
+
         self.ax.clear()
         
         # Get extents based on xarray coordinates
@@ -479,9 +596,15 @@ class MyCanvas(FigureCanvas):
         
         self.scatter = self.ax.scatter(x_vals, y_vals, facecolors=initial_colors)
         self.facecolors = initial_colors
-        self.draw()
         self.intensity = intensity
         self.peak_positions = peak_positions
+        self.draw()
+
+        # Debugging statements
+        print(f"Intensity DataArray: {intensity}")
+        print(f"Peak Positions DataArray: {peak_positions}")
+        print(f"Colorbar: {self.colorbar}")
+        print(f"Scatter Plot Object: {self.scatter}")
 
     def update_scatter(self):
         ''' 
@@ -772,23 +895,23 @@ class MyCanvas(FigureCanvas):
             self.texts.pop(index)
             self.draw()
 
-    def export_data(self, filepath):
-        ''' 
-        export_data:
-            Purpose:
-            Exports the modified intensity and peak_positions to a netCDF4 (h5netcdf) file.
+    # def export_data(self, filepath):
+    #     ''' 
+    #     export_data:
+    #         Purpose:
+    #         Exports the modified intensity and peak_positions to a netCDF4 (h5netcdf) file.
 
-            Implementation:
-            Uses xarray to save the DataArrays to a file.
+    #         Implementation:
+    #         Uses xarray to save the DataArrays to a file.
 
-            Considerations:
-            Filepath should be valid and writable.
+    #         Considerations:
+    #         Filepath should be valid and writable.
             
-            Attributes:
-            intensity, peak_positions
-        '''
-        ds = xr.Dataset({'intensity': self.intensity, 'peak_positions': self.peak_positions})
-        ds.to_netcdf(filepath, engine='h5netcdf')
+    #         Attributes:
+    #         intensity, peak_positions
+    #     '''
+    #     ds = xr.Dataset({'intensity': self.intensity, 'peak_positions': self.peak_positions})
+    #     ds.to_netcdf(filepath, engine='h5netcdf')
 
     def update_color_scale(self, vmin, vmax):
         if len(self.ax.images) == 0:  # Check if images are present
@@ -797,6 +920,7 @@ class MyCanvas(FigureCanvas):
         self.colorbar.update_normal(self.ax.images[0])  # Update the colorbar
         self.draw()  # Redraw the canvas
 
+# Window Layout & Figure Updating Methods (pairs with the control methods)
 class MyWindow(QMainWindow):
     def __init__(self):
         ''' 
@@ -821,9 +945,7 @@ class MyWindow(QMainWindow):
         self.ds = None
         self.add_point_cid = None
         self.remove_point_cid = None
-    
-        self.waxs_reduce = None  # Initialize here
-
+        self.waxs_reduce = None  # Initialize WAXSReduce
 
     def initUI(self):
         ''' 
@@ -843,8 +965,7 @@ class MyWindow(QMainWindow):
         '''
 
         self.canvas = MyCanvas()
-        # self.toolbar = NavigationToolbar(self.canvas, self)
-        self.toolbar = MyNavigationToolbar(self.canvas, self)
+        self.toolbar = MyNavigationToolbar(self.canvas, self) # self to canvas and parent canvas
         
         # Connect built-in toolbar buttons to a custom slot
         for action in self.toolbar.actions():
@@ -855,17 +976,10 @@ class MyWindow(QMainWindow):
         script_dir = os.path.dirname(os.path.realpath(__file__))
 
         # Construct full icon paths
-        # load_icon_path = os.path.join(script_dir, 'icons/loaddata_icon.png')
         add_point_icon_path = os.path.join(script_dir, 'icons/addpoint_icon.png')
         remove_point_icon_path = os.path.join(script_dir, 'icons/removepoint_icon.png')
         highlight_icon_path = os.path.join(script_dir, 'icons/highlight_icon.png')
-        export_icon_path = os.path.join(script_dir, 'icons/exportdata_icon.png')
 
-        # btn_load = QPushButton()
-        # btn_load.setIcon(QIcon(load_icon_path))
-        # btn_load.setToolTip('Load Data')
-        # btn_load.clicked.connect(self.loadData)
-        
         btn_add_point = QPushButton()
         btn_add_point.setIcon(QIcon(add_point_icon_path))
         btn_add_point.setToolTip('Add Point')
@@ -880,11 +994,6 @@ class MyWindow(QMainWindow):
         btn_highlight.setIcon(QIcon(highlight_icon_path))
         btn_highlight.setToolTip('Highlight Selection')
         btn_highlight.clicked.connect(self.activateHighlight)
-        
-        btn_export = QPushButton()
-        btn_export.setIcon(QIcon(export_icon_path))
-        btn_export.setToolTip('Export Data')
-        btn_export.clicked.connect(self.exportData)
 
         # Create a grid layout
         layout = QGridLayout()
@@ -895,12 +1004,10 @@ class MyWindow(QMainWindow):
         vlayout.addWidget(btn_add_point)
         vlayout.addWidget(btn_remove_point)
         vlayout.addWidget(btn_highlight)
-        vlayout.addWidget(btn_export)
         button_group.setLayout(vlayout)
 
         # Place widgets in the grid layout
         # Layout Positions: addWidget(QWidget, row, column, rowSpan, columnSpan)
-        # layout.addWidget(btn_load, 0, 0, 1, 1)  # Span 2 columns
         layout.addWidget(self.toolbar, 0, 0, 1, 3)  # Span 2 columns
         layout.addWidget(button_group, 1, 0, 1, 1)  # Buttons on the left
         layout.addWidget(self.canvas, 1, 1, 2, 2)  # Canvas on the right
@@ -915,12 +1022,6 @@ class MyWindow(QMainWindow):
         self.slider_vmax.setMinimum(0)
         self.slider_vmax.setMaximum(100)
         self.slider_vmax.valueChanged.connect(self.update_vmax)
-
-        # Add sliders to layout
-        # layout.addWidget(QLabel("Min:"), 2, 0)
-        # layout.addWidget(self.slider_vmin, 2, 1)
-        # layout.addWidget(QLabel("Max:"), 3, 0)
-        # layout.addWidget(self.slider_vmax, 3, 1)
 
         # Adjust column widths
         layout.setColumnStretch(0, 1)  # 8% of the width

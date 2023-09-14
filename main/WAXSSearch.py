@@ -34,7 +34,6 @@ from collections import namedtuple
 from IPython.display import clear_output
 from typing import Optional
 import matplotlib.pyplot as plt
-import json
 
 class WAXSSearch:
     def __init__(self, data):
@@ -370,67 +369,6 @@ class WAXSSearch:
 
         plt.tight_layout()
         plt.show()
-
-    '''
-    def display_image_with_peaks_and_DoG(self, img, title='Image with Peaks', cmap='turbo'):
-        plt.close('all')
-        plt.figure(figsize=(15, 7))
-
-        DoG = self.DoG
-        extent = None
-
-        if isinstance(img, xr.DataArray):
-            img_values = img.values
-            peaks = img.attrs.get('peaks', None)
-            coords_names = list(img.coords.keys())
-            if len(coords_names) == 2:
-                extent = [
-                    img.coords[coords_names[1]].min(),
-                    img.coords[coords_names[1]].max(),
-                    img.coords[coords_names[0]].min(),
-                    img.coords[coords_names[0]].max()
-                ]
-                ylabel, xlabel = coords_names
-
-        else:
-            img_values = img
-            peaks = None
-
-        # Calculate vmin and vmax for the original image
-        vmin = np.nanpercentile(img_values, 10)
-        vmax = np.nanpercentile(img_values, 99)
-
-        plt.subplot(1, 2, 1)
-        plt.imshow(np.flipud(img_values),
-                cmap=cmap,
-                vmin=vmin,  # Use calculated vmin and vmax
-                vmax=vmax,  
-                extent=extent,
-                aspect='auto')
-        plt.colorbar()
-        plt.title(f"{title} - Original")
-        plt.xlabel(xlabel)
-        plt.ylabel(ylabel)
-
-        if peaks is not None:
-            peak_coords = np.column_stack(np.where(~np.isnan(peaks.values)))
-            peak_x_values = peaks.coords[coords_names[1]].values[peak_coords[:, 1]]
-            peak_y_values = peaks.coords[coords_names[0]].values[peak_coords[:, 0]]
-            plt.scatter(peak_x_values, peak_y_values, c='red', marker='o')
-
-        plt.subplot(1, 2, 2)
-        plt.imshow(np.flipud(DoG),
-                cmap=cmap,
-                extent=extent,
-                aspect='auto')
-        plt.colorbar()
-        plt.title(f"{title} - DoG")
-        plt.xlabel(xlabel)
-        plt.ylabel(ylabel)
-
-        plt.tight_layout()
-        plt.show()
-    '''
 
     #  Display Image Output (w/ peaks): Modified version of the display_image method to overlay scatter points for peak locations
     def display_image_with_peaks(self, img, title='Image with Peaks', cmap='turbo'):
