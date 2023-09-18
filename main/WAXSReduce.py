@@ -35,6 +35,7 @@ from collections import namedtuple
 from IPython.display import clear_output
 from typing import Optional
 import gc
+from pathlib import Path
 
 # - Custom Imports
 from WAXSTransform import WAXSTransform
@@ -79,6 +80,7 @@ class WAXSReduce:
         self.rawtiff_np = None # datatype: numpy array, RAW TIFF (numpy)
         self.rawtiff_xr = None # datatype: xarray DataArray, RAW TIFF (xarray)
         
+        '''
         # # Check if zarrPath is provided
         # if zarrPath is not None:
         #     self.zarrPath = zarrPath
@@ -90,6 +92,7 @@ class WAXSReduce:
         #     # Check that the required parameters are provided
         #     if poniPath is None or maskPath is None or tiffPath is None:
         #         raise ValueError("Must provide either zarrPath or poniPath, maskPath, and tiffPath.")
+        '''
 
         # - Load the Single Image
         self.loadSingleImage(self.tiffPath)
@@ -110,6 +113,9 @@ class WAXSReduce:
         self.smoothed_img = None # Store Smoothed Image
         self.normalized_img = None # Store Normalized Image
         self.snrtemp = None # Temporary signal-to-noise ratio 
+
+        # - General Data Operations
+        self.ds = None # temporary dataarray
 
 ## --- DATA LOADING & METADATA EXTRACTION --- ##
     # -- Image Loading
@@ -211,31 +217,18 @@ class WAXSReduce:
     #         json.dump(attributes_to_save, file)
 
     # # -- Imports the current class instantiation when called.
-    # def loadzarr(self, zarrPath: Union[str, pathlib.Path], projectName: str):
-    #     # Define the project directory
-    #     project_path = pathlib.Path(zarrPath) / projectName
+    def load_xarray_dataset(self, file_path: Path) -> xr.Dataset:
+        if not file_path.exists():
+            raise FileNotFoundError(f"No file found at {file_path}")
+        
+        if file_path.suffix != '.nc':
+            raise ValueError(f"Invalid file type {file_path.suffix}. Expected a .nc file.")
+        
+        self.ds = xr.open_dataset(file_path, engine='h5netcdf')
 
-    #     # Load xarray DataArrays from Zarr files
-    #     for key in ['rawtiff_xr', 'reciptiff_xr', 'cakedtiff_xr']:
-    #         ds_path = project_path / f"{key}.zarr"
-    #         ds = xr.open_zarr(ds_path)
-    #         self.__dict__[key] = ds[key]
-
-    #     # Load other attributes from the JSON file
-    #     json_path = project_path / "attributes.json"
-    #     with open(json_path, 'r') as file:
-    #         attributes = json.load(file)
-    #         self.basePath = pathlib.Path(attributes['basePath'])
-    #         self.poniPath = pathlib.Path(attributes['poniPath'])
-    #         self.maskPath = pathlib.Path(attributes['maskPath'])
-    #         self.tiffPath = pathlib.Path(attributes['tiffPath'])
-    #         self.metadata_keylist = attributes['metadata_keylist']
-    #         self.attribute_dict = attributes['attribute_dict']
-    #         self.energy = attributes['energy']
-
-    #     # Rebuild GIXSTransformObj and load single image
-    #     self.GIXSTransformObj = self.detCorrObj()
-    #     self.loadSingleImage(self.tiffPath)
+        print("Dataset info:")
+        print(self.ds.info())
+        return self.ds
 
 ## --- IMAGE PROCESSING (REQUIRED) --- ##
     # -- Apply Image Corrections
@@ -602,6 +595,7 @@ class WAXSReduce:
         plt.colorbar()
         plt.show()
 
+    
 class Integration1D(WAXSReduce):
     def __init__(self, waxs_instance=None):
         if waxs_instance:

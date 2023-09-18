@@ -371,72 +371,60 @@ class WAXSSearch:
         plt.show()
 
     #  Display Image Output (w/ peaks): Modified version of the display_image method to overlay scatter points for peak locations
-    def display_image_with_peaks(self, img, title='Image with Peaks', cmap='turbo'):
+    def display_image_with_peaks(self, dataset, title='Image with Peaks', cmap='turbo'):
         plt.close('all')
+        plt.figure(figsize=(15, 7))
 
-        # Check for invalid or incompatible types
-        if img is None or not isinstance(img, (np.ndarray, xr.DataArray)):
-            raise ValueError("The input image is None or not of a compatible type.")
+        DoG = dataset.attrs.get('DoG', None)  # Retrieve DoG from attrs if available
 
-        # Initialize extent
-        extent = None
+        img = dataset['intensity']
+        img_values = img.values
+        peaks = dataset['peak_positions']
+        coords_names = list(img.coords.keys())
 
-        # Check for xarray DataArray
-        if isinstance(img, xr.DataArray):
-            img_values = img.values
-            peaks = img.attrs.get('peaks', None)  # Retrieve peaks from attrs
-
-            # Extract extent and axis labels from xarray coordinates if available
-            coords_names = list(img.coords.keys())
-            if len(coords_names) == 2:
-                extent = [
-                    img.coords[coords_names[1]].min(),
-                    img.coords[coords_names[1]].max(),
-                    img.coords[coords_names[0]].min(),
-                    img.coords[coords_names[0]].max()
-                ]
-                ylabel, xlabel = coords_names
-        else:
-            img_values = img
-            peaks = None
-
-            # Use self.coords if available
-            if self.coords is not None:
-                extent = [
-                    self.coords['x_min'],
-                    self.coords['x_max'],
-                    self.coords['y_min'],
-                    self.coords['y_max']
-                ]
-                xlabel, ylabel = 'qxy', 'qz'
-
-        # Check for empty or all NaN array
-        if np.all(np.isnan(img_values)) or img_values.size == 0:
-            raise ValueError("The input image is empty or contains only NaN values.")
+        extent = [
+            img.coords[coords_names[1]].min(),
+            img.coords[coords_names[1]].max(),
+            img.coords[coords_names[0]].min(),
+            img.coords[coords_names[0]].max()
+        ]
+        ylabel, xlabel = coords_names
 
         vmin = np.nanpercentile(img_values, 10)
         vmax = np.nanpercentile(img_values, 99)
 
+        plt.subplot(1, 2, 1)
         plt.imshow(np.flipud(img_values),
                 cmap=cmap,
                 vmin=vmin,
                 vmax=vmax,
                 extent=extent,
-                aspect='auto')  # Ensure the aspect ratio is set automatically
-
+                aspect='auto')
         plt.colorbar()
+        plt.title(f"{title} - Original")
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
 
-        # Overlay scatter points for peak locations
         if peaks is not None:
-            peak_coords = np.column_stack(np.where(~np.isnan(peaks.values)))
+            peak_coords = np.column_stack(np.where(peaks.values == 1))
             peak_x_values = peaks.coords[coords_names[1]].values[peak_coords[:, 1]]
             peak_y_values = peaks.coords[coords_names[0]].values[peak_coords[:, 0]]
             plt.scatter(peak_x_values, peak_y_values, c='red', marker='o')
 
-        plt.title(title)
+        plt.subplot(1, 2, 2)
+        if DoG is not None:
+            plt.imshow(np.flipud(DoG),
+                    cmap=cmap,
+                    extent=extent,
+                    aspect='auto')
+            plt.title(f"{title} - DoG")
+        else:
+            plt.title(f"{title} - No DoG Data")
+        plt.colorbar()
         plt.xlabel(xlabel)
         plt.ylabel(ylabel)
-        # plt.colorbar()
+
+        plt.tight_layout()
         plt.show()
 
 ## -- METHODS FOR SAVING DATA OUTPUTS -- ## 
@@ -577,4 +565,74 @@ class PeakPairing:
 class PeakSearch1D:
     def __init__(self) -> None:
         pass
+'''
+
+'''
+    def display_image_with_peaks(self, img, title='Image with Peaks', cmap='turbo'):
+        plt.close('all')
+
+        # Check for invalid or incompatible types
+        if img is None or not isinstance(img, (np.ndarray, xr.DataArray)):
+            raise ValueError("The input image is None or not of a compatible type.")
+
+        # Initialize extent
+        extent = None
+
+        # Check for xarray DataArray
+        if isinstance(img, xr.DataArray):
+            img_values = img.values
+            peaks = img.attrs.get('peaks', None)  # Retrieve peaks from attrs
+
+            # Extract extent and axis labels from xarray coordinates if available
+            coords_names = list(img.coords.keys())
+            if len(coords_names) == 2:
+                extent = [
+                    img.coords[coords_names[1]].min(),
+                    img.coords[coords_names[1]].max(),
+                    img.coords[coords_names[0]].min(),
+                    img.coords[coords_names[0]].max()
+                ]
+                ylabel, xlabel = coords_names
+        else:
+            img_values = img
+            peaks = None
+
+            # Use self.coords if available
+            if self.coords is not None:
+                extent = [
+                    self.coords['x_min'],
+                    self.coords['x_max'],
+                    self.coords['y_min'],
+                    self.coords['y_max']
+                ]
+                xlabel, ylabel = 'qxy', 'qz'
+
+        # Check for empty or all NaN array
+        if np.all(np.isnan(img_values)) or img_values.size == 0:
+            raise ValueError("The input image is empty or contains only NaN values.")
+
+        vmin = np.nanpercentile(img_values, 10)
+        vmax = np.nanpercentile(img_values, 99)
+
+        plt.imshow(np.flipud(img_values),
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                extent=extent,
+                aspect='auto')  # Ensure the aspect ratio is set automatically
+
+        plt.colorbar()
+
+        # Overlay scatter points for peak locations
+        if peaks is not None:
+            peak_coords = np.column_stack(np.where(~np.isnan(peaks.values)))
+            peak_x_values = peaks.coords[coords_names[1]].values[peak_coords[:, 1]]
+            peak_y_values = peaks.coords[coords_names[0]].values[peak_coords[:, 0]]
+            plt.scatter(peak_x_values, peak_y_values, c='red', marker='o')
+
+        plt.title(title)
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
+        # plt.colorbar()
+        plt.show()
 '''

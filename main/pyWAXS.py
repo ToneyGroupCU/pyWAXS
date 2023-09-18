@@ -895,23 +895,23 @@ class MyCanvas(FigureCanvas):
             self.texts.pop(index)
             self.draw()
 
-    # def export_data(self, filepath):
-    #     ''' 
-    #     export_data:
-    #         Purpose:
-    #         Exports the modified intensity and peak_positions to a netCDF4 (h5netcdf) file.
+    def export_data(self, filepath):
+        ''' 
+        export_data:
+            Purpose:
+            Exports the modified intensity and peak_positions to a netCDF4 (h5netcdf) file.
 
-    #         Implementation:
-    #         Uses xarray to save the DataArrays to a file.
+            Implementation:
+            Uses xarray to save the DataArrays to a file.
 
-    #         Considerations:
-    #         Filepath should be valid and writable.
+            Considerations:
+            Filepath should be valid and writable.
             
-    #         Attributes:
-    #         intensity, peak_positions
-    #     '''
-    #     ds = xr.Dataset({'intensity': self.intensity, 'peak_positions': self.peak_positions})
-    #     ds.to_netcdf(filepath, engine='h5netcdf')
+            Attributes:
+            intensity, peak_positions
+        '''
+        ds = xr.Dataset({'intensity': self.intensity, 'peak_positions': self.peak_positions})
+        ds.to_netcdf(filepath, engine='h5netcdf')
 
     def update_color_scale(self, vmin, vmax):
         if len(self.ax.images) == 0:  # Check if images are present
