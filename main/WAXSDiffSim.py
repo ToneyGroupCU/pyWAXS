@@ -100,6 +100,8 @@ class WAXSDiffSim:
         
         # Storing values in the DataFrame
         self.data.loc[len(self.data)] = [address, a1, a2, a3, position, None, None]
+        # self.diffsim_df.loc[len(self.diffsim_df)] = [address, a1, a2, a3, position, None, None]
+
         # return a1,a2,a3,position
 
     # -- BRAGG PEAK CALCULATION: Calculate the position of the Bragg Peaks.

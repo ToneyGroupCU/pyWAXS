@@ -24,5 +24,6 @@ Updates (Planned)
 - [ ] Add feature to display selected peaks with highlighter tool in table using colorization.
 - [ ] Create loadable Docker container for installing the pyWAXS application with dependencies.
 - [ ] Create a label indicator for hover over (qr, chi) points.
+- [ ] Add an Undo button for point deletion and link to ctrl + z shortcut.
 
 ## --- COMPLETED (previously) ---- ##

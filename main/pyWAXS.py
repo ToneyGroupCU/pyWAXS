@@ -1,5 +1,5 @@
 # -- PyQt5 Imports -- #
-from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QGridLayout, QWidget, QFileDialog, QGroupBox, QVBoxLayout, QSlider, QLabel, QAction, QDialog, QFormLayout, QLineEdit, QComboBox, QMessageBox, QTextEdit, QTableWidget, QTableWidgetItem, QRadioButton
+from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QGridLayout, QWidget, QFileDialog, QGroupBox, QVBoxLayout, QSlider, QLabel, QAction, QDialog, QFormLayout, QLineEdit, QComboBox, QMessageBox, QTextEdit, QTableWidget, QTableWidgetItem, QRadioButton, QToolBar
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QIcon, QFont
 
@@ -20,6 +20,7 @@ from pathlib import Path
 # -- Custom Imports -- #
 from WAXSReduce import WAXSReduce
 from WAXSReduce import Integration1D
+# from pyWAXSim import SimulatedIntensityWindow
 
 class MyTableWidget(QTableWidget):
     row_selected = pyqtSignal(int)  # Signal to emit the selected row index
@@ -325,7 +326,7 @@ class MyNavigationToolbar(NavigationToolbar2QT):
         custom_buttons = [
             {'name': 'Create Project', 'icon': os.path.join(script_dir, 'icons/create_project_icon.png'), 'function': self.create_project},
             {'name': 'Load Project', 'icon': os.path.join(script_dir, 'icons/load_project_icon.png'), 'function': self.load_project},
-            {'name': 'Create Calibrant', 'icon': os.path.join(script_dir, 'icons/create_calibrant_icon.png'), 'function': self.create_calibrant},
+            # {'name': 'Create Calibrant', 'icon': os.path.join(script_dir, 'icons/create_calibrant_icon.png'), 'function': self.create_calibrant},
             # {'name': 'Load PONI', 'icon': os.path.join(script_dir, 'icons/load_poni_icon.png'), 'function': self.load_poni},
             # {'name': 'Load MASK', 'icon': os.path.join(script_dir, 'icons/load_mask_icon.png'), 'function': self.load_mask},
             {'name': 'Export Project', 'icon': os.path.join(script_dir, 'icons/export_project_icon.png'), 'function': self.export_project},
@@ -1163,6 +1164,7 @@ class MyCanvas(FigureCanvas):
 
 # Window Layout & Figure Updating Methods (pairs with the control methods)
 class MyWindow(QMainWindow):
+    # ============ Initialization Methods ============
     def __init__(self):
         ''' 
         __init__:
@@ -1251,9 +1253,9 @@ class MyWindow(QMainWindow):
 
         # Place widgets in the grid layout
         # LAYOUT FORMATTING ---- Layout Positions: addWidget(QWidget, row, column, rowSpan, columnSpan)
-        layout.addWidget(self.toolbar, 0, 0, 1, 3)  # Span 2 columns
-        layout.addWidget(button_group, 1, 0, 1, 1)  # Buttons on the left
-        layout.addWidget(self.canvas, 1, 1, 2, 2)  # Canvas on the right
+        # layout.addWidget(self.toolbar, 0, 0, 1, 3)  # Span 3 columns
+        # layout.addWidget(button_group, 1, 0, 1, 1)  # Buttons on the left
+        # layout.addWidget(self.canvas, 1, 1, 2, 2)  # Canvas on the right
         
         # Create sliders for colorbar adjustment
         self.slider_vmin = QSlider(Qt.Horizontal)
@@ -1271,7 +1273,8 @@ class MyWindow(QMainWindow):
         self.canvas.tableWidget.setHorizontalHeaderLabels(['qᵣ (Å⁻¹)', '𝛘 (°)', 'qxy (Å⁻¹)', 'qz (Å⁻¹)', 'd-spacing (Å)', 'Intensity'])
 
         # Add the table widget to the layout
-        layout.addWidget(self.canvas.tableWidget, 3, 1, 1, 1)
+        layout.addWidget(self.canvas.tableWidget, 3, 1, 1, 3)
+        # layout.addWidget(self.canvas.tableWidget, 3, 1, 1, 1)
 
         # Create a vertical widget for the Clear Selection, Enable Selection Mode, and Export Table buttons
         selection_group = QGroupBox("Selection Tools")
@@ -1321,15 +1324,35 @@ class MyWindow(QMainWindow):
         self.canvas.tableWidget.clicked.connect(self.cell_was_clicked)
         self.canvas.tableWidget.itemSelectionChanged.connect(self.row_was_selected)
 
-    def row_was_selected(self):
-        if self.selectModeButton.isChecked():  # Only proceed if in selection mode
-            selected_rows = list(set(index.row() for index in self.canvas.tableWidget.selectedItems()))
-            for row in selected_rows:
-                self.canvas.highlight_scatter_point(row)
+        # Create the custom toolbar
+        self.customToolbar = QToolBar("My Custom Toolbar")
+        self.addToolBar(Qt.LeftToolBarArea, self.customToolbar)
+        
+        # Migrate the Create Calibrant button
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+        create_calibrant_icon_path = os.path.join(script_dir, 'icons/create_calibrant_icon.png')
+        action_create_calibrant = QAction(QIcon(create_calibrant_icon_path), "Create Calibrant", self)
+        action_create_calibrant.triggered.connect(self.create_calibrant)
+        self.customToolbar.addAction(action_create_calibrant)
 
-    def cell_was_clicked(self, index):
-        print(f"Cell clicked: Row {index.row()} Column {index.column()}")
+        # Add a button to launch the new application with an icon
+        launch_sim_icon_path = os.path.join(script_dir, 'icons/launch_sim_icon.png')
+        action_launch_sim = QAction(QIcon(launch_sim_icon_path), "GIWAXS Simulation App", self)
+        action_launch_sim.triggered.connect(self.launch_sim_app)
+        self.customToolbar.addAction(action_launch_sim)
 
+# ============ UI Update Methods ============
+    def update_vmin(self):
+        value = self.slider_vmin.value()
+        current_vmax = self.canvas.ax.images[0].get_clim()[1]
+        self.canvas.update_color_scale(value, current_vmax)
+
+    def update_vmax(self):
+        value = self.slider_vmax.value()
+        current_vmin = self.canvas.ax.images[0].get_clim()[0]
+        self.canvas.update_color_scale(current_vmin, value)
+
+# ============ Data Handling Methods ============
     def loadData(self):
         options = QFileDialog.Options()
         file, _ = QFileDialog.getOpenFileName(self, "Load Data", "", "NetCDF Files (*.nc);;All Files (*)", options=options)
@@ -1359,6 +1382,80 @@ class MyWindow(QMainWindow):
 
         # self.canvas.set_dataset(self.ds)  # Update ds in MyCanvas
 
+    def exportData(self):
+        ''' 
+        exportData:
+            Purpose:
+            Opens a file dialog for exporting data and calls the export_data method from MyCanvas.
+
+            Implementation:
+            Uses QFileDialog to get the filepath and then invokes MyCanvas.export_data.
+
+            Considerations:
+            Assumes that MyCanvas instance is available as self.canvas.
+            
+            Attributes:
+            ds
+        '''
+        options = QFileDialog.Options()
+        filepath, _ = QFileDialog.getSaveFileName(self, "Export Data", "", "NetCDF Files (*.nc);;All Files (*)", options=options)
+        if filepath:
+            if not filepath.endswith('.nc'):
+                filepath += '.nc'
+            self.canvas.export_data(filepath)
+
+    def store_waxs_reduce(self, waxs_reduce_instance):
+        self.waxs_reduce = waxs_reduce_instance  # Store the instance in the MyWindow class
+
+    def export_table_to_csv(self):
+        options = QFileDialog.Options()
+        filepath, _ = QFileDialog.getSaveFileName(self, "Export Table", "", "CSV Files (*.csv);;All Files (*)", options=options)
+        if filepath:
+            if not filepath.endswith('.csv'):
+                filepath += '.csv'
+            
+            with open(filepath, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                
+                # Write headers
+                headers = [self.canvas.tableWidget.horizontalHeaderItem(i).text() for i in range(self.canvas.tableWidget.columnCount())]
+                writer.writerow(headers)
+                
+                # Write data
+                for i in range(self.canvas.tableWidget.rowCount()):
+                    row_data = [self.canvas.tableWidget.item(i, j).text() if self.canvas.tableWidget.item(i, j) is not None else '' for j in range(self.canvas.tableWidget.columnCount())]
+                    writer.writerow(row_data)
+
+# ============ Event Handling Methods ============
+    def row_was_selected(self):
+        if self.selectModeButton.isChecked():  # Only proceed if in selection mode
+            selected_rows = list(set(index.row() for index in self.canvas.tableWidget.selectedItems()))
+            for row in selected_rows:
+                self.canvas.highlight_scatter_point(row)
+
+    def cell_was_clicked(self, index):
+        print(f"Cell clicked: Row {index.row()} Column {index.column()}")
+
+# ============ Point Manipulation Methods ============
+    def activateAddPoint(self):
+        ''' 
+        activateAddPoint:
+            Purpose:
+            Activates the event connection for adding points.
+
+            Implementation:
+            Connects the button_press_event to the add_point method of the MyCanvas class.
+            
+            Considerations:
+            Make sure to deactivate other conflicting functionalities like remove point.
+            
+            Attributes:
+            add_point_cid (int): Holds the new connection ID for adding points.
+        '''
+
+        self.deactivateRemovePoint()
+        self.add_point_cid = self.canvas.mpl_connect('button_press_event', self.canvas.add_point)
+
     def deactivateAddPoint(self):
         ''' 
         deactivateAddPoint:
@@ -1379,6 +1476,25 @@ class MyWindow(QMainWindow):
             self.canvas.mpl_disconnect(self.add_point_cid)
             self.add_point_cid = None
 
+    def activateRemovePoint(self):
+        ''' 
+        activateRemovePoint:
+            Purpose:
+            Activates the event connection for removing points.
+
+            Implementation:
+            Connects the button_press_event to the remove_point method of the MyCanvas class.
+            
+            Considerations:
+            Make sure to deactivate other conflicting functionalities like add point.
+            
+            Attributes:
+            remove_point_cid (int): Holds the new connection ID for removing points.
+        '''
+
+        self.deactivateAddPoint()
+        self.remove_point_cid = self.canvas.mpl_connect('button_press_event', self.canvas.remove_point)
+
     def deactivateRemovePoint(self):
         ''' 
         deactivateRemovePoint:
@@ -1398,44 +1514,6 @@ class MyWindow(QMainWindow):
         if self.remove_point_cid is not None:
             self.canvas.mpl_disconnect(self.remove_point_cid)
             self.remove_point_cid = None
-
-    def activateAddPoint(self):
-        ''' 
-        activateAddPoint:
-            Purpose:
-            Activates the event connection for adding points.
-
-            Implementation:
-            Connects the button_press_event to the add_point method of the MyCanvas class.
-            
-            Considerations:
-            Make sure to deactivate other conflicting functionalities like remove point.
-            
-            Attributes:
-            add_point_cid (int): Holds the new connection ID for adding points.
-        '''
-
-        self.deactivateRemovePoint()
-        self.add_point_cid = self.canvas.mpl_connect('button_press_event', self.canvas.add_point)
-
-    def activateRemovePoint(self):
-        ''' 
-        activateRemovePoint:
-            Purpose:
-            Activates the event connection for removing points.
-
-            Implementation:
-            Connects the button_press_event to the remove_point method of the MyCanvas class.
-            
-            Considerations:
-            Make sure to deactivate other conflicting functionalities like add point.
-            
-            Attributes:
-            remove_point_cid (int): Holds the new connection ID for removing points.
-        '''
-
-        self.deactivateAddPoint()
-        self.remove_point_cid = self.canvas.mpl_connect('button_press_event', self.canvas.remove_point)
 
     def deactivate_point_buttons(self):
         ''' 
@@ -1478,60 +1556,7 @@ class MyWindow(QMainWindow):
 
         self.canvas.setup_rectangle_selector()
 
-    def exportData(self):
-        ''' 
-        exportData:
-            Purpose:
-            Opens a file dialog for exporting data and calls the export_data method from MyCanvas.
-
-            Implementation:
-            Uses QFileDialog to get the filepath and then invokes MyCanvas.export_data.
-
-            Considerations:
-            Assumes that MyCanvas instance is available as self.canvas.
-            
-            Attributes:
-            ds
-        '''
-        options = QFileDialog.Options()
-        filepath, _ = QFileDialog.getSaveFileName(self, "Export Data", "", "NetCDF Files (*.nc);;All Files (*)", options=options)
-        if filepath:
-            if not filepath.endswith('.nc'):
-                filepath += '.nc'
-            self.canvas.export_data(filepath)
-
-    def update_vmin(self):
-        value = self.slider_vmin.value()
-        current_vmax = self.canvas.ax.images[0].get_clim()[1]
-        self.canvas.update_color_scale(value, current_vmax)
-
-    def update_vmax(self):
-        value = self.slider_vmax.value()
-        current_vmin = self.canvas.ax.images[0].get_clim()[0]
-        self.canvas.update_color_scale(current_vmin, value)
-
-    def store_waxs_reduce(self, waxs_reduce_instance):
-        self.waxs_reduce = waxs_reduce_instance  # Store the instance in the MyWindow class
-
-    def export_table_to_csv(self):
-        options = QFileDialog.Options()
-        filepath, _ = QFileDialog.getSaveFileName(self, "Export Table", "", "CSV Files (*.csv);;All Files (*)", options=options)
-        if filepath:
-            if not filepath.endswith('.csv'):
-                filepath += '.csv'
-            
-            with open(filepath, 'w', newline='') as csvfile:
-                writer = csv.writer(csvfile)
-                
-                # Write headers
-                headers = [self.canvas.tableWidget.horizontalHeaderItem(i).text() for i in range(self.canvas.tableWidget.columnCount())]
-                writer.writerow(headers)
-                
-                # Write data
-                for i in range(self.canvas.tableWidget.rowCount()):
-                    row_data = [self.canvas.tableWidget.item(i, j).text() if self.canvas.tableWidget.item(i, j) is not None else '' for j in range(self.canvas.tableWidget.columnCount())]
-                    writer.writerow(row_data)
-
+# ============ Selection Tools ============
     def clear_selection(self):
         self.canvas.tableWidget.clearSelection()
         facecolors = self.canvas.scatter.get_facecolors()
@@ -1544,6 +1569,23 @@ class MyWindow(QMainWindow):
             self.canvas.scatter.set_picker(5)  # Enable picking
         else:
             self.canvas.scatter.set_picker(None)  # Disable picking
+
+# ============ Custom Side-Toolbar Methods ============
+    # Slot for Create Calibrant
+    def create_calibrant(self):
+        try:
+            subprocess.run(["bash", "-c", "eval \"$(conda shell.bash hook)\" && conda activate pyWAXS && pyFAI-calib2"])
+        except Exception as e:
+            print(f"An error occurred: {e}")
+    
+    # Slot to launch the new application
+    def launch_sim_app(self):
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # Get the directory of the current script
+        try:
+            subprocess.run(["bash", "-c", f"cd {script_dir} && eval \"$(conda shell.bash hook)\" && conda activate pyWAXS && python3 pyWAXSim.py"])
+        except Exception as e:
+            print(f"An error occurred: {e}")
+
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
