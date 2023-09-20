@@ -1,7 +1,7 @@
 # -- PyQt5 Imports -- #
-from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QGridLayout, QWidget, QFileDialog, QGroupBox, QVBoxLayout, QSlider, QLabel, QAction, QDialog, QFormLayout, QLineEdit, QComboBox, QMessageBox, QTextEdit
+from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QGridLayout, QWidget, QFileDialog, QGroupBox, QVBoxLayout, QSlider, QLabel, QAction, QDialog, QFormLayout, QLineEdit, QComboBox, QMessageBox, QTextEdit, QTableWidget, QTableWidgetItem, QRadioButton
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon, QFont
 
 # -- Matplotlib Imports -- #
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT as NavigationToolbar
@@ -12,7 +12,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
 
 # -- Additional Imports -- #
-import sys, os, subprocess, re
+import sys, os, subprocess, re, csv
 import xarray as xr
 import numpy as np
 from pathlib import Path
@@ -20,6 +20,41 @@ from pathlib import Path
 # -- Custom Imports -- #
 from WAXSReduce import WAXSReduce
 from WAXSReduce import Integration1D
+
+class MyTableWidget(QTableWidget):
+    row_selected = pyqtSignal(int)  # Signal to emit the selected row index
+
+    def __init__(self, parent=None):
+        super(MyTableWidget, self).__init__(parent)
+        self.setSortingEnabled(True)
+        
+        # Enable custom sorting
+        header = self.horizontalHeader()
+        header.setSortIndicatorShown(True)
+        header.setSectionsClickable(True)
+        header.sortIndicatorChanged.connect(self.customSort)
+
+    def lessThan(self, item1, item2):
+        value1 = item1.data(Qt.UserRole)
+        value2 = item2.data(Qt.UserRole)
+
+        if value1 is not None and value2 is not None:
+            return value1 < value2
+        else:
+            return item1.text() < item2.text()
+
+    def customSort(self, index):
+        self.sortItems(index, Qt.AscendingOrder if self.horizontalHeader().sortIndicatorOrder() == Qt.AscendingOrder else Qt.DescendingOrder)
+
+    def selectionChanged(self, selected, deselected):
+        super(MyTableWidget, self).selectionChanged(selected, deselected)
+        for index in selected.indexes():
+            self.row_selected.emit(index.row())
+
+    def selectRow(self, row):
+        super(MyTableWidget, self).selectRow(row)
+        self.row_selected.emit(row)
+        print(f"Row {row} selected, signal emitted.")  # Debugging statement
 
 # File Dialog: Create New Project
 class CreateProjectDialog(QDialog):
@@ -395,7 +430,18 @@ class MyNavigationToolbar(NavigationToolbar2QT):
                 try:
                     if new_ds['intensity'] is None or new_ds['peak_positions'] is None:
                         raise ValueError("Intensity or peak positions are None.")
-                    self.window.canvas.plot_data(new_ds['intensity'], new_ds['peak_positions'])
+                    
+                    # Extract coordinate names
+                    coord_names_intensity = list(new_ds['intensity'].dims)
+                    coord_names_peak = list(new_ds['peak_positions'].dims)
+                    
+                    coords = {
+                        'xlabel': coord_names_intensity[1] if len(coord_names_intensity) > 1 else None,  
+                        'ylabel': coord_names_intensity[0] if len(coord_names_intensity) > 0 else None,
+                    }
+                    
+                    self.window.canvas.plot_data(new_ds['intensity'], new_ds['peak_positions'], coords)
+
                 except Exception as e:
                     QMessageBox.critical(self.window, "Error", f"An error occurred while plotting: {e}", QMessageBox.Ok)
                     return  # If plotting fails, don't proceed
@@ -484,19 +530,44 @@ class MyCanvas(FigureCanvas):
 
         self.fig = Figure()
         super(MyCanvas, self).__init__(self.fig)
-        
         self.ax = self.fig.add_subplot(111)
         self.peak_positions = None
         self.intensity = None  
         self.scatter = None
-        self.highlighted_points = []  # To keep track of highlighted points
-        self.highlighted_indices = []  # Initialize it here
-        self.rectangles = []  # To keep track of rectangles
-        self.selected_rect = None  # To keep track of the selected rectangle
-        self.RS = None  # Add this line to create a new attribute for RectangleSelector
-        self.texts = []  # To keep track of 'X' text objects
+        self.highlighted_points = []  
+        self.highlighted_indices = []  
+        self.rectangles = []  
+        self.selected_rect = None  
+        self.RS = None  
+        self.texts = []  
         self.cid_pick = self.mpl_connect('pick_event', self.on_rect_pick)
-        self.colorbar = None  # Initialize the colorbar attribute
+        self.colorbar = None
+        self.tableWidget = MyTableWidget()
+        self.tableWidget.setColumnCount(7)
+        self.tableWidget.setHorizontalHeaderLabels(
+            ['qᵣ (Å⁻¹)', '𝛘 (°)', 'qxy (Å⁻¹)', 'qz (Å⁻¹)', 'd-spacing (Å)', 'Intensity', '']
+        )
+        self.tableWidget.setColumnHidden(6, True)  
+        self.tableWidget.setSortingEnabled(True)
+        # self.tableWidget.row_selected.connect(self.highlight_scatter_point)
+        # Connect the currentRowChanged signal to the highlight_scatter_point function
+        self.tableWidget.selectionModel().currentRowChanged.connect(self.highlight_scatter_point)
+        self.tableWidget.selectionModel().currentRowChanged.connect(self.some_test_function)
+        self.tableWidget.selectionModel().selectionChanged.connect(self.on_table_selection_change)
+        self.row_to_point_map = {}
+
+        # Inside MyCanvas.__init__
+        self.tableWidget.clicked.connect(self.cell_was_clicked)
+
+    def cell_was_clicked(self, index):
+        print(f"Cell clicked: Row {index.row()} Column {index.column()}")
+
+    def some_test_function(self, current, previous):
+        print("Row changed. Current:", current.row(), "Previous:", previous.row())
+
+    def set_dataset(self, ds):
+        '''Set the dataset from the MyWindow class each time the dataset 'ds' stored in MyCanvas is updated.'''
+        self.ds = ds # update the MyCanvas dataset
 
     def init_plot(self):
         '''Add an init_plot method to initialize a blank plot with no data. This can be called to reset the plot before adding new data.'''
@@ -522,7 +593,7 @@ class MyCanvas(FigureCanvas):
         
         self.draw()
 
-    def plot_data(self, intensity, peak_positions):
+    def plot_data(self, intensity, peak_positions, coords=None):
         ''' 
         plot_data:
             Purpose:
@@ -545,12 +616,6 @@ class MyCanvas(FigureCanvas):
             colorbar (matplotlib.colorbar.Colorbar): Colorbar for the 2D heatmap.
         '''
         # self.init_plot()  # Reset the plot
-
-        # Debugging statements
-        print(f"Intensity DataArray: {intensity}")
-        print(f"Peak Positions DataArray: {peak_positions}")
-        print(f"Colorbar: {self.colorbar}")
-        print(f"Scatter Plot Object: {self.scatter}")
         
         # Validation
         if intensity is None:
@@ -576,7 +641,17 @@ class MyCanvas(FigureCanvas):
             intensity.coords[intensity.dims[0]].max(),
         ]
         
-        im = self.ax.imshow(intensity.values, cmap='turbo', origin='lower', extent=extent, aspect='auto')
+        # Calculate vmin and vmax
+        img_values = intensity.values
+        vmin = np.nanpercentile(img_values, 10)
+        vmax = np.nanpercentile(img_values, 99)
+        
+        # Change color map and set contrast
+        im = self.ax.imshow(intensity.values, cmap='turbo', 
+                            origin='lower', 
+                            extent=extent, 
+                            aspect='auto', 
+                            vmin=vmin, vmax=vmax)
         
         # Add or update the colorbar
         if self.colorbar is not None:
@@ -596,15 +671,29 @@ class MyCanvas(FigureCanvas):
         
         self.scatter = self.ax.scatter(x_vals, y_vals, facecolors=initial_colors)
         self.facecolors = initial_colors
+
+        # Update MyCanvas Intensity & Peak Positions variables.
         self.intensity = intensity
         self.peak_positions = peak_positions
+        
+        # If coordinates for labels are provided, set them
+        if coords:
+            xlabel = coords.get('xlabel', None)
+            ylabel = coords.get('ylabel', None)
+            if xlabel:
+                self.ax.set_xlabel(xlabel)
+            if ylabel:
+                self.ax.set_ylabel(ylabel)
+
+        # self.set_dataset(self.ds)  # Update ds in MyCanvas
+        self.update_table()
         self.draw()
 
-        # Debugging statements
-        print(f"Intensity DataArray: {intensity}")
-        print(f"Peak Positions DataArray: {peak_positions}")
-        print(f"Colorbar: {self.colorbar}")
-        print(f"Scatter Plot Object: {self.scatter}")
+        # # Debugging statements
+        # print(f"Intensity DataArray: {intensity}")
+        # print(f"Peak Positions DataArray: {peak_positions}")
+        # print(f"Colorbar: {self.colorbar}")
+        # print(f"Scatter Plot Object: {self.scatter}")
 
     def update_scatter(self):
         ''' 
@@ -626,6 +715,8 @@ class MyCanvas(FigureCanvas):
         y_vals = self.peak_positions.coords[self.peak_positions.dims[0]].values[y]
         x_vals = self.peak_positions.coords[self.peak_positions.dims[1]].values[x]
         self.scatter.set_offsets(np.c_[x_vals, y_vals])
+        
+        self.update_table()
         self.draw()
 
     @staticmethod
@@ -668,7 +759,9 @@ class MyCanvas(FigureCanvas):
         ix = self.find_closest(self.peak_positions.coords[self.peak_positions.dims[1]].values, event.xdata)
         iy = self.find_closest(self.peak_positions.coords[self.peak_positions.dims[0]].values, event.ydata)
         self.peak_positions.loc[{self.peak_positions.dims[0]: iy, self.peak_positions.dims[1]: ix}] = 1
+        
         self.update_scatter()
+        self.update_table()
 
     def remove_point(self, event):
         ''' 
@@ -714,6 +807,7 @@ class MyCanvas(FigureCanvas):
         
         # Update the scatter plot
         self.update_scatter()
+        self.update_table()
     
     def toggle_selector(self, event):
         ''' 
@@ -920,6 +1014,153 @@ class MyCanvas(FigureCanvas):
         self.colorbar.update_normal(self.ax.images[0])  # Update the colorbar
         self.draw()  # Redraw the canvas
 
+    '''
+    def update_table(self):
+        self.tableWidget.setSortingEnabled(False)  # Disable sorting before update
+
+        if self.intensity is None or self.peak_positions is None:
+            print("Intensity or peak_positions is not initialized.")
+            return
+        
+        y, x = np.where(self.peak_positions.values == 1)
+        chi_values = self.peak_positions.coords[self.peak_positions.dims[0]].values[y]
+        qr_values = self.peak_positions.coords[self.peak_positions.dims[1]].values[x]
+
+        # Convert chi to radians and calculate qxy and qz
+        chi_rad = np.radians(90 - chi_values)
+        qxy_values = qr_values * np.cos(chi_rad)
+        qz_values = qr_values * np.sin(chi_rad)
+        # d_values = (2*np.pi)/qr_values
+        d_values = np.round((2 * np.pi) / qr_values, decimals=2).astype(np.float64)
+
+        # Fetch intensity values
+        intensity_values = [self.intensity.sel({self.peak_positions.dims[0]: chi, self.peak_positions.dims[1]: qr}).values.item() for chi, qr in zip(chi_values, qr_values)]
+
+        # Assert that all arrays have the same length
+        assert len(qr_values) == len(chi_values) == len(intensity_values), "Data length mismatch"
+
+        # Set the number of rows and columns
+        num_rows = len(qr_values)
+        self.tableWidget.setRowCount(num_rows)
+        self.tableWidget.setColumnCount(7)
+
+        # Set the column headers
+        self.tableWidget.setHorizontalHeaderLabels(['qᵣ (Å⁻¹)', '𝛘 (°)', 'qxy (Å⁻¹)', 'qz (Å⁻¹)', 'd-spacing (Å)', 'Intensity'])
+
+        # Populate the table
+        for i in range(num_rows):
+            item0 = QTableWidgetItem("{:.2f}".format(qr_values[i]))
+            item0.setData(Qt.UserRole, float(qr_values[i]))
+            self.tableWidget.setItem(i, 0, item0)
+
+            item1 = QTableWidgetItem("{:.2f}".format(chi_values[i]))
+            item1.setData(Qt.UserRole, float(chi_values[i]))
+            self.tableWidget.setItem(i, 1, item1)
+
+            item2 = QTableWidgetItem("{:.2f}".format(qxy_values[i]))
+            item2.setData(Qt.UserRole, float(qxy_values[i]))
+            self.tableWidget.setItem(i, 2, item2)
+
+            item3 = QTableWidgetItem("{:.2f}".format(qz_values[i]))
+            item3.setData(Qt.UserRole, float(qz_values[i]))
+            self.tableWidget.setItem(i, 3, item3)
+
+            item4 = QTableWidgetItem("{:.2f}".format(d_values[i]))
+            item4.setData(Qt.UserRole, float(d_values[i]))
+            self.tableWidget.setItem(i, 4, item4)
+
+            item5 = QTableWidgetItem("{:.2f}".format(intensity_values[i]))
+            item5.setData(Qt.UserRole, float(intensity_values[i]))
+            self.tableWidget.setItem(i, 5, item5)
+    
+            hidden_item = QTableWidgetItem()
+            hidden_item.setData(Qt.UserRole, i)  # Store the scatter point index
+            self.tableWidget.setItem(i, 6, hidden_item)  # Column 6 will be the hidden column
+
+        self.tableWidget.setSortingEnabled(True)  # Re-enable sorting after update
+    '''
+
+    def update_table(self):
+        self.tableWidget.setSortingEnabled(False)
+        if self.intensity is None or self.peak_positions is None:
+            print("Intensity or peak_positions is not initialized.")
+            return
+        y, x = np.where(self.peak_positions.values == 1)
+        chi_values = self.peak_positions.coords[self.peak_positions.dims[0]].values[y]
+        qr_values = self.peak_positions.coords[self.peak_positions.dims[1]].values[x]
+        chi_rad = np.radians(90 - chi_values)
+        qxy_values = qr_values * np.cos(chi_rad)
+        qz_values = qr_values * np.sin(chi_rad)
+        d_values = np.round((2 * np.pi) / qr_values, decimals=2).astype(np.float64)
+        intensity_values = [self.intensity.sel({self.peak_positions.dims[0]: chi, self.peak_positions.dims[1]: qr}).values.item() for chi, qr in zip(chi_values, qr_values)]
+        num_rows = len(qr_values)
+        self.tableWidget.setRowCount(num_rows)
+        self.tableWidget.setColumnCount(7)
+        self.tableWidget.setHorizontalHeaderLabels(['qᵣ (Å⁻¹)', '𝛘 (°)', 'qxy (Å⁻¹)', 'qz (Å⁻¹)', 'd-spacing (Å)', 'Intensity'])
+        
+        for i in range(num_rows):
+            item0 = QTableWidgetItem("{:.2f}".format(qr_values[i]))
+            item0.setData(Qt.UserRole, float(qr_values[i]))
+            self.tableWidget.setItem(i, 0, item0)
+
+            item1 = QTableWidgetItem("{:.2f}".format(chi_values[i]))
+            item1.setData(Qt.UserRole, float(chi_values[i]))
+            self.tableWidget.setItem(i, 1, item1)
+
+            item2 = QTableWidgetItem("{:.2f}".format(qxy_values[i]))
+            item2.setData(Qt.UserRole, float(qxy_values[i]))
+            self.tableWidget.setItem(i, 2, item2)
+
+            item3 = QTableWidgetItem("{:.2f}".format(qz_values[i]))
+            item3.setData(Qt.UserRole, float(qz_values[i]))
+            self.tableWidget.setItem(i, 3, item3)
+
+            item4 = QTableWidgetItem("{:.2f}".format(d_values[i]))
+            item4.setData(Qt.UserRole, float(d_values[i]))
+            self.tableWidget.setItem(i, 4, item4)
+
+            item5 = QTableWidgetItem("{:.2f}".format(intensity_values[i]))
+            item5.setData(Qt.UserRole, float(intensity_values[i]))
+            self.tableWidget.setItem(i, 5, item5)
+    
+            hidden_item = QTableWidgetItem()
+            hidden_item.setData(Qt.UserRole, i)
+            self.tableWidget.setItem(i, 6, hidden_item)
+
+        self.tableWidget.setSortingEnabled(True)
+        self.tableWidget.setColumnHidden(6, True)  # Hide the last column again
+
+    def highlight_scatter_point(self, row):
+        hidden_item = self.tableWidget.item(row, 6)
+        if hidden_item:
+            point_index = hidden_item.data(Qt.UserRole)
+            facecolors = self.scatter.get_facecolors()
+            facecolors[point_index] = [0, 1, 1, 1]  # Change to cyan
+            self.scatter.set_facecolors(facecolors)
+            self.draw()  # Redraw the canvas
+
+    def on_table_selection_change(self, selected, deselected):
+        facecolors = self.scatter.get_facecolors()
+
+        # Handle deselected rows
+        deselected_rows = list(set(index.row() for index in deselected.indexes()))
+        for row in deselected_rows:
+            hidden_item = self.tableWidget.item(row, 6)
+            if hidden_item:
+                point_index = int(hidden_item.data(Qt.UserRole))
+                facecolors[point_index, :3] = [1, 0, 0]  # Set deselected to red
+
+        # Handle newly selected rows
+        selected_rows = list(set(index.row() for index in selected.indexes()))
+        for row in selected_rows:
+            hidden_item = self.tableWidget.item(row, 6)
+            if hidden_item:
+                point_index = int(hidden_item.data(Qt.UserRole))
+                facecolors[point_index, :3] = [0, 1, 1]  # Set selected to cyan
+
+        self.scatter.set_facecolors(facecolors)
+        self.draw()  # Redraw the canvas
+
 # Window Layout & Figure Updating Methods (pairs with the control methods)
 class MyWindow(QMainWindow):
     def __init__(self):
@@ -942,10 +1183,12 @@ class MyWindow(QMainWindow):
 
         super(MyWindow, self).__init__()
         self.initUI()
-        self.ds = None
+        self.ds = None # dataset values
+        # self.canvas.set_dataset(self.ds)  # Update ds in MyCanvas
         self.add_point_cid = None
         self.remove_point_cid = None
         self.waxs_reduce = None  # Initialize WAXSReduce
+        self.resize(1000, 750)  # Set the size to 800x600 pixels
 
     def initUI(self):
         ''' 
@@ -1007,7 +1250,7 @@ class MyWindow(QMainWindow):
         button_group.setLayout(vlayout)
 
         # Place widgets in the grid layout
-        # Layout Positions: addWidget(QWidget, row, column, rowSpan, columnSpan)
+        # LAYOUT FORMATTING ---- Layout Positions: addWidget(QWidget, row, column, rowSpan, columnSpan)
         layout.addWidget(self.toolbar, 0, 0, 1, 3)  # Span 2 columns
         layout.addWidget(button_group, 1, 0, 1, 1)  # Buttons on the left
         layout.addWidget(self.canvas, 1, 1, 2, 2)  # Canvas on the right
@@ -1023,6 +1266,42 @@ class MyWindow(QMainWindow):
         self.slider_vmax.setMaximum(100)
         self.slider_vmax.valueChanged.connect(self.update_vmax)
 
+        self.canvas.tableWidget = QTableWidget()
+        self.canvas.tableWidget.setColumnCount(6)
+        self.canvas.tableWidget.setHorizontalHeaderLabels(['qᵣ (Å⁻¹)', '𝛘 (°)', 'qxy (Å⁻¹)', 'qz (Å⁻¹)', 'd-spacing (Å)', 'Intensity'])
+
+        # Add the table widget to the layout
+        layout.addWidget(self.canvas.tableWidget, 3, 1, 1, 1)
+
+        # Create a vertical widget for the Clear Selection, Enable Selection Mode, and Export Table buttons
+        selection_group = QGroupBox("Selection Tools")
+        selection_vlayout = QVBoxLayout()
+
+        self.clearButton = QPushButton('Clear Selection')
+        self.clearButton.clicked.connect(self.clear_selection)
+
+        self.selectModeButton = QRadioButton('Enable Selection Mode')
+        self.selectModeButton.setChecked(False)
+        self.selectModeButton.toggled.connect(self.toggle_selection_mode)
+
+        btn_export_table = QPushButton("Export Table")
+        btn_export_table.clicked.connect(self.export_table_to_csv)
+
+        # Add these new buttons to the vertical layout
+        selection_vlayout.addWidget(self.selectModeButton)
+        selection_vlayout.addWidget(self.clearButton)
+        selection_vlayout.addWidget(btn_export_table)
+
+        selection_group.setLayout(selection_vlayout)
+
+        # Add the QGroupBox to your existing grid layout
+        layout.addWidget(selection_group, 3, 0, 1, 1)  # Adjust the grid position as needed
+
+        # Add widgets to layout
+        layout.addWidget(self.toolbar, 0, 0, 1, 3)
+        layout.addWidget(button_group, 1, 0, 1, 1)
+        layout.addWidget(self.canvas, 1, 1, 2, 2)
+
         # Adjust column widths
         layout.setColumnStretch(0, 1)  # 8% of the width
         layout.setColumnStretch(1, 11)  # 92% of the width
@@ -1037,34 +1316,48 @@ class MyWindow(QMainWindow):
         # Here we connect the toolbar to deactivate_point_buttons
         for action in self.toolbar.actions():
             action.triggered.connect(self.deactivate_point_buttons)
+        
+        # Inside MyWindow.__init__ after canvas initialization
+        self.canvas.tableWidget.clicked.connect(self.cell_was_clicked)
+        self.canvas.tableWidget.itemSelectionChanged.connect(self.row_was_selected)
+
+    def row_was_selected(self):
+        if self.selectModeButton.isChecked():  # Only proceed if in selection mode
+            selected_rows = list(set(index.row() for index in self.canvas.tableWidget.selectedItems()))
+            for row in selected_rows:
+                self.canvas.highlight_scatter_point(row)
+
+    def cell_was_clicked(self, index):
+        print(f"Cell clicked: Row {index.row()} Column {index.column()}")
 
     def loadData(self):
-        ''' 
-        loadData:
-            Purpose:
-            Opens a file dialog and loads the selected NetCDF data file into the application.
-
-            Implementation:
-            Uses QFileDialog to select a file and uses xarray to load the data. Then plots the data using the MyCanvas class.
-            
-            Considerations:
-            The file should be in NetCDF format for proper loading.
-            
-            Attributes:
-            ds (xarray.Dataset): Updated with the newly loaded dataset.
-        '''
-
         options = QFileDialog.Options()
         file, _ = QFileDialog.getOpenFileName(self, "Load Data", "", "NetCDF Files (*.nc);;All Files (*)", options=options)
         if file:
             self.ds = xr.open_dataset(file, engine='h5netcdf')
-            self.canvas.plot_data(self.ds['intensity'], self.ds['peak_positions'])
+            
+            # Extract coordinate names
+            coord_names_intensity = list(self.ds['intensity'].dims)
+            coord_names_peak = list(self.ds['peak_positions'].dims)
+            
+            coords = {
+                'xlabel': coord_names_intensity[1] if len(coord_names_intensity) > 1 else None,  
+                'ylabel': coord_names_intensity[0] if len(coord_names_intensity) > 0 else None,
+            }
+
+            self.canvas.plot_data(self.ds['intensity'], self.ds['peak_positions'], coords)
         
         if self.ds:
             max_intensity = self.ds['intensity'].max()
             max_intensity = int(max_intensity.values)
             self.slider_vmin.setMaximum(max_intensity)
             self.slider_vmax.setMaximum(max_intensity)
+
+        print("Loaded dataset:", self.ds)
+        print("Intensity dimensions:", self.ds['intensity'].dims)
+        print("Peak_positions dimensions:", self.ds['peak_positions'].dims)
+
+        # self.canvas.set_dataset(self.ds)  # Update ds in MyCanvas
 
     def deactivateAddPoint(self):
         ''' 
@@ -1220,7 +1513,43 @@ class MyWindow(QMainWindow):
     def store_waxs_reduce(self, waxs_reduce_instance):
         self.waxs_reduce = waxs_reduce_instance  # Store the instance in the MyWindow class
 
+    def export_table_to_csv(self):
+        options = QFileDialog.Options()
+        filepath, _ = QFileDialog.getSaveFileName(self, "Export Table", "", "CSV Files (*.csv);;All Files (*)", options=options)
+        if filepath:
+            if not filepath.endswith('.csv'):
+                filepath += '.csv'
+            
+            with open(filepath, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                
+                # Write headers
+                headers = [self.canvas.tableWidget.horizontalHeaderItem(i).text() for i in range(self.canvas.tableWidget.columnCount())]
+                writer.writerow(headers)
+                
+                # Write data
+                for i in range(self.canvas.tableWidget.rowCount()):
+                    row_data = [self.canvas.tableWidget.item(i, j).text() if self.canvas.tableWidget.item(i, j) is not None else '' for j in range(self.canvas.tableWidget.columnCount())]
+                    writer.writerow(row_data)
+
+    def clear_selection(self):
+        self.canvas.tableWidget.clearSelection()
+        facecolors = self.canvas.scatter.get_facecolors()
+        facecolors[:, :3] = [1, 0, 0]  # Revert all points to red
+        self.canvas.scatter.set_facecolors(facecolors)
+        self.canvas.draw()
+
+    def toggle_selection_mode(self, enabled):
+        if enabled:
+            self.canvas.scatter.set_picker(5)  # Enable picking
+        else:
+            self.canvas.scatter.set_picker(None)  # Disable picking
+
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    # Set the global QFont to Arial
+    font = QFont("Arial")
+    app.setFont(font)
+
     window = MyWindow()
     sys.exit(app.exec_())

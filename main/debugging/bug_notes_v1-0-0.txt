@@ -1,0 +1,28 @@
+## --- Debugging/Update/Path Notes V.1.0.0 ---- ##
+Date: 09/19/2023
+
+## --- TO DO ---- ##
+Debugging
+- [X] Fix Default Contrast Scaling
+- [ ] Fix Contrast Scaling Reset (automatic)
+- [ ] Add automatic axis label updating.
+- [ ] Deactivate add/remove buttons when zooming and panning.
+- [ ] Fix contrast scalbar when zooming in/out. Contrast resets after zoom back out.
+- [ ] Fix rectangular highlighter to add closing [x] box
+- [ ] Attach rectangular closing [x] box to the movable highlight region.
+- [ ] Fix [x] box so that when a window is closed it is removed.
+- [ ] Sorting chi & d-spacing in table are not functioning properly.
+
+Updates (Planned)
+- [ ] Add an indicator for the selected or active buttons for the peak selector.
+- [ ] Add an automated peak search button with input parameters.
+= [ ] Add an option to store the run peak positions with output data as an DataArray with attributes for machine learning implementation.
+- [ ] Add sliding intensity cropping tool - only display the bounded intensity values in selected region. Could be enabled by pyQt5 tools?
+- [ ] Add fitting widget application window for selected sliced/boxcut regions to fit over detector gaps.
+    - [ ] Update peak center positions and add specialized assignment to denote detector gap fitted position.
+- [ ] Add/Remove indicator 
+- [ ] Add feature to display selected peaks with highlighter tool in table using colorization.
+- [ ] Create loadable Docker container for installing the pyWAXS application with dependencies.
+- [ ] Create a label indicator for hover over (qr, chi) points.
+
+## --- COMPLETED (previously) ---- ##
