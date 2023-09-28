@@ -36,6 +36,7 @@ from IPython.display import clear_output
 from typing import Optional
 import gc
 from pathlib import Path
+from datetime import datetime
 
 # - Custom Imports
 from WAXSTransform import WAXSTransform
@@ -612,6 +613,7 @@ class Integration1D(WAXSReduce):
 
         # - Boxcut Integration (qxy x qz)
         self.boxcut1D_xr = None
+        self.boxcut1D_interp_xr = None
         self.qxyslice = []
         self.qzslice = []
         self.boxcutsum = 'qz'
@@ -695,7 +697,7 @@ class Integration1D(WAXSReduce):
 
             return self.cakeslice1D_xr
 
-    def boxcut1D(self, img, qxyslice=[0, 2.5], qzslice=[0, 2.5], boxcutsum='qz'):
+    def boxcut1D(self, img, qxyslice=[0, 2.5], qzslice=[0, 2.5], boxcutsum = None, interpolate_gaps=False, interp_method = 'slinear', order = None):
         """
         Description: 
         Receives an input Xarray DataArray and performs a sum along either the 'qxy' or 'qz' direction
@@ -707,6 +709,8 @@ class Integration1D(WAXSReduce):
         - qxyslice: A list [qxymin, qxymax] defining the range of 'qxy' values for slicing.
         - qzslice: A list [qzmin, qzmax] defining the range of 'qz' values for slicing.
         - boxcutsum: A string specifying the direction along which to sum ('qxy' or 'qz').
+        - interpolate_gaps: Whether to interpolate over gaps in the data (True or False).
+        - display_interpolation: Whether to display pre- and post-interpolated plots (True or False).
 
         Attributes:
         - self.boxcut1D_xr: Stores the resulting 1D DataArray after slicing and summing.
@@ -715,9 +719,9 @@ class Integration1D(WAXSReduce):
         Returns the 1D DataArray after slicing and summing, and stores it in self.boxcut1D_xr.
         """
         # Check if boxcutsum is either 'qxy' or 'qz'
-        if boxcutsum not in ['qxy', 'qz']:
-            print("Invalid boxcutsum value. Defaulting to 'qz'.")
-            boxcutsum = 'qz'
+        # if boxcutsum not in ['qxy', 'qz']:
+        #     print("Invalid boxcutsum value. Defaulting to 'qz'.")
+        #     boxcutsum = 'qz'
 
         # Normalize dimension names
         qz_aliases = ['qz', 'q_z', 'QZ', 'Q_z', 'Q_Z']
@@ -725,6 +729,7 @@ class Integration1D(WAXSReduce):
 
         qz_dim = None
         qxy_dim = None
+
         for dim in img.dims:
             if dim in qz_aliases:
                 qz_dim = dim
@@ -750,8 +755,14 @@ class Integration1D(WAXSReduce):
         slicing_dict = {qz_dim: slice(qzmin, qzmax), qxy_dim: slice(qxymin, qxymax)}
 
         # Perform slicing and summing
-        boxcut1D_xr = img.sel(**slicing_dict).sum(boxcutsum)
+        # boxcut1D_xr = img.sel(**slicing_dict).sum(boxcutsum)
 
+        # Perform slicing
+        sliced_img = img.sel(**slicing_dict)
+
+        # Perform summing
+        boxcut1D_xr = sliced_img.sum(boxcutsum)
+        
         # Assign DataArray attributes
         boxcut1D_xr.attrs['qxymin'] = qxymin
         boxcut1D_xr.attrs['qxymax'] = qxymax
@@ -759,14 +770,44 @@ class Integration1D(WAXSReduce):
         boxcut1D_xr.attrs['qzmax'] = qzmax
         boxcut1D_xr.attrs['sumdir'] = boxcutsum
 
-        # Assign coordinate names
-        coord_name = qxy_dim if boxcutsum == 'qz' else qz_dim
+        # Identify coordinate name for later use
+        coord_name = qxy_dim if boxcutsum == qz_dim else qz_dim
+        boxcut1D_xr.attrs['xcoord'] = coord_name
+
         # Check if the dimension still exists after summing
         if coord_name in boxcut1D_xr.dims:
             boxcut1D_xr = boxcut1D_xr.rename({coord_name: 'intensity'})
 
         # Save as a class attribute
         self.boxcut1D_xr = boxcut1D_xr
+        
+        # Handle interpolation on the sliced image if necessary
+        if interpolate_gaps:
+            # Replace zero values with NaN for interpolation
+            # sliced_img_interpolated = sliced_img.where(sliced_img != 0)
+            
+            if interp_method == 'polynomial':
+                # Interpolation along the specific dimension
+                if order is None or order is np.NaN or order is 0:
+                    order = 3
+
+                sliced_img_interpolated = sliced_img.where(sliced_img != 0).compute().interpolate_na(dim=coord_name, method=interp_method, order = order)
+            
+            else: 
+                sliced_img_interpolated = sliced_img.where(sliced_img != 0).compute().interpolate_na(dim=coord_name, method=interp_method)
+
+            # Save as a class attribute
+            self.sliced_img_interpolated_xr = sliced_img_interpolated
+
+        # If interpolated slice exists, sum it as well
+        if hasattr(self, 'sliced_img_interpolated_xr'):
+            boxcut1D_interp_xr = self.sliced_img_interpolated_xr.sum(boxcutsum)
+            
+            # Rename the dimension to 'intensity' for the interpolated array
+            if coord_name in boxcut1D_interp_xr.dims:
+                boxcut1D_interp_xr = boxcut1D_interp_xr.rename({coord_name: 'intensity'})
+            
+            self.boxcut1D_interp_xr = boxcut1D_interp_xr
 
         return self.boxcut1D_xr
 
@@ -1058,29 +1099,115 @@ class Integration1D(WAXSReduce):
         qr = np.sqrt(qxy ** 2 + qz ** 2)
         return chi, qr
     
-    def display_image1D(self, img1D, color='red'):
+    '''
+    # Updated 'display_image1D' method to include save_path option
+    def display_image1D(self, integrator, color='red', title='1D Integrated Image', save_image=False, samplenameprefix=None, savePath=".", plot_interpolated=False):
         """
         Description: Plots a 1D DataArray using matplotlib.
 
         Variables:
-        - img1D: The 1D Xarray DataArray to be plotted.
-        - color: Color of the plot line.
+        - integrator: The integrator object containing the 1D Xarray DataArray to be plotted.
+        - color: Color of the plot line for the original data.
+        - title: Title of the plot.
+        - save_image: Whether to save the image as a .png file (True or False).
+        - samplenameprefix: Prefix for the saved image file name if save_image is True.
+        - save_path: Path where the image will be saved if save_image is True.
+        - plot_interpolated: Whether to plot the interpolated data (True or False).
 
         Output:
-        Displays the plot.
+        Displays the plot and optionally saves it as a .png file.
         """
+        
+        img1D = integrator.boxcut1D_xr  # Extract the DataArray from the integrator object
 
+        plt.close('all')
         plt.figure(figsize=(10, 6))
-        img1D.plot.line(color=color)
-
+        
+        # Plot original data
+        img1D.plot.line(color=color, label='Original')
+        
+        # Choose a different color for interpolated data if it matches the original color
+        interp_color = 'green' if color != 'green' else 'blue'
+        
+        # Plot interpolated data if requested
+        if plot_interpolated:
+            try:
+                integrator.boxcut1D_interp_xr.plot.line(color=interp_color, label='Interpolated')
+            except AttributeError:
+                print("Interpolated data is not available. Only original data will be plotted.")
+        
         plt.ylabel('Intensity (arb. units)')
         plt.xlabel(img1D.attrs.get('sumdir', 'Coordinate'))
-        
-        plt.title('1D Integrated Image')
+        plt.title(title)
         plt.grid(True)
-
+        plt.legend()  # Add legend
+            
+        if save_image:
+            if samplenameprefix is None:
+                raise ValueError("samplenameprefix must be provided if save_image is True")
+            
+            timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+            filename = f"{samplenameprefix}_{timestamp}.png"
+            full_save_path = Path(savePath) / filename
+            plt.savefig(full_save_path)
+            
         plt.show()
+    '''
 
+    # Updated 'display_image1D' method to include save_path option
+    def display_image1D(self, integrator, color='red', title='1D Integrated Image', save_image=False, samplenameprefix=None, savePath=".", plot_interpolated=False):
+        """
+        Description: Plots a 1D DataArray using matplotlib.
+
+        Variables:
+        - integrator: The integrator object containing the 1D Xarray DataArray to be plotted.
+        - color: Color of the plot line for the original data.
+        - title: Title of the plot.
+        - save_image: Whether to save the image as a .png file (True or False).
+        - samplenameprefix: Prefix for the saved image file name if save_image is True.
+        - save_path: Path where the image will be saved if save_image is True.
+        - plot_interpolated: Whether to plot the interpolated data (True or False).
+
+        Output:
+        Displays the plot and optionally saves it as a .png file.
+        """
+        
+        img1D = integrator.boxcut1D_xr  # Extract the DataArray from the integrator object
+
+        plt.close('all')
+        plt.figure(figsize=(10, 6))
+        
+        # Choose a different color for interpolated data if it matches the original color
+        interp_color = 'green' if color != 'green' else 'blue'
+        
+        # Plot interpolated data if requested
+        if plot_interpolated:
+            try:
+                integrator.boxcut1D_interp_xr.plot.line(color=interp_color, label='Interpolated')
+            except AttributeError:
+                print("Interpolated data is not available. Only original data will be plotted.")
+        
+        # Plot original data
+        img1D.plot.line(color=color, label='Original')
+        
+        plt.ylabel('Intensity (arb. units)')
+        # plt.xlabel(img1D.attrs.get('sumdir', 'Coordinate'))
+        plt.xlabel(img1D.attrs.get('xcoord', 'Coordinate'))
+        plt.title(title)
+        plt.grid(True)
+        plt.legend()  # Add legend
+            
+        if save_image:
+            if samplenameprefix is None:
+                raise ValueError("samplenameprefix must be provided if save_image is True")
+            
+            timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+            filename = f"{samplenameprefix}_{timestamp}.png"
+            full_save_path = Path(savePath) / filename
+            plt.savefig(full_save_path)
+            
+        plt.show()
+        
     def plot_data_transform_interpolation(original_data, chi, qr, transformed_data, interpolated_data, chi_range, qr_range):
         fig, ax = plt.subplots(1, 3, figsize=(20, 6))
         

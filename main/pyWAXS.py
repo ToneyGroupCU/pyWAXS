@@ -1164,7 +1164,7 @@ class MyCanvas(FigureCanvas):
 
 # Window Layout & Figure Updating Methods (pairs with the control methods)
 class MyWindow(QMainWindow):
-    # ============ Initialization Methods ============
+# ============ Initialization Methods ============
     def __init__(self):
         ''' 
         __init__:
@@ -1242,6 +1242,14 @@ class MyWindow(QMainWindow):
 
         # Create a grid layout
         layout = QGridLayout()
+        # layout.addWidget(self.toolbar, 0, 0, 1, 4)
+        # layout.addWidget(field_group, 1, 0, 1, 1)
+        # layout.addWidget(self.canvas, 1, 1, 1, 3)  # Give more space to canvas
+        # layout.addWidget(self.tableWidget, 2, 1, 1, 3)  # Give more space to tableWidget
+
+        # # Adjust column widths
+        # layout.setColumnStretch(0, 1)  # Adjust these numbers to set the stretch factor
+        # layout.setColumnStretch(1, 3)  # Adjust these numbers to set the stretch factor
 
         # Create a vertical widget for the three buttons
         button_group = QGroupBox("Peak Selection Tools")
@@ -1331,7 +1339,7 @@ class MyWindow(QMainWindow):
         # Migrate the Create Calibrant button
         script_dir = os.path.dirname(os.path.realpath(__file__))
         create_calibrant_icon_path = os.path.join(script_dir, 'icons/create_calibrant_icon.png')
-        action_create_calibrant = QAction(QIcon(create_calibrant_icon_path), "Create Calibrant", self)
+        action_create_calibrant = QAction(QIcon(create_calibrant_icon_path), "Create Calibrant (pyFAI)", self)
         action_create_calibrant.triggered.connect(self.create_calibrant)
         self.customToolbar.addAction(action_create_calibrant)
 
@@ -1407,6 +1415,7 @@ class MyWindow(QMainWindow):
     def store_waxs_reduce(self, waxs_reduce_instance):
         self.waxs_reduce = waxs_reduce_instance  # Store the instance in the MyWindow class
 
+    '''
     def export_table_to_csv(self):
         options = QFileDialog.Options()
         filepath, _ = QFileDialog.getSaveFileName(self, "Export Table", "", "CSV Files (*.csv);;All Files (*)", options=options)
@@ -1425,6 +1434,33 @@ class MyWindow(QMainWindow):
                 for i in range(self.canvas.tableWidget.rowCount()):
                     row_data = [self.canvas.tableWidget.item(i, j).text() if self.canvas.tableWidget.item(i, j) is not None else '' for j in range(self.canvas.tableWidget.columnCount())]
                     writer.writerow(row_data)
+    '''
+
+    def export_table_to_csv(self):
+        options = QFileDialog.Options()
+        filepath, _ = QFileDialog.getSaveFileName(self, "Export Table", "", "CSV Files (*.csv);;All Files (*)", options=options)
+        if filepath:
+            if not filepath.endswith('.csv'):
+                filepath += '.csv'
+            try:
+                # with open(filepath, 'w', newline='') as csvfile:
+                with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
+
+                    writer = csv.writer(csvfile)
+                    
+                    # Write headers
+                    # headers = [self.canvas.tableWidget.horizontalHeaderItem(i).text() for i in range(self.canvas.tableWidget.columnCount())]
+                    # headers = [self.canvas.tableWidget.horizontalHeaderItem(i).text() if self.canvas.tableWidget.horizontalHeaderItem(i) is not None else '' for i in range(self.canvas.tableWidget.columnCount())]
+                    headers = ['qr', 'chi', 'qxy', 'qz', 'd_spacing', 'intensity']
+                    writer.writerow(headers)
+                    
+                    # Write data
+                    for i in range(self.canvas.tableWidget.rowCount()):
+                        # row_data = [self.canvas.tableWidget.item(i, j).text() if self.canvas.tableWidget.item(i, j) is not None else '' for j in range(self.canvas.tableWidget.columnCount())]
+                        row_data = [self.canvas.tableWidget.item(i, j).text() if self.canvas.tableWidget.item(i, j) is not None else '' for j in range(self.canvas.tableWidget.columnCount())]
+                        writer.writerow(row_data)
+            except Exception as e:
+                print(f"An error occurred: {e}")
 
 # ============ Event Handling Methods ============
     def row_was_selected(self):
