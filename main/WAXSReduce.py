@@ -1053,7 +1053,7 @@ class Integration1D(WAXSReduce):
         return chi, qr
 
     # Updated 'display_image1D' method to include save_path option
-    def display_image1D(self, integrator, color='red', title='1D Integrated Image', save_image=False, samplenameprefix=None, savePath=".", plot_interpolated=False):
+    def display_image1D(self, img1D, color='red', title='1D Integrated Image', save_image=False, samplenameprefix=None, savePath=".", plot_interpolated=False):
         """
         Description: Plots a 1D DataArray using matplotlib.
 
@@ -1070,7 +1070,7 @@ class Integration1D(WAXSReduce):
         Displays the plot and optionally saves it as a .png file.
         """
         
-        img1D = integrator.boxcut1D_xr  # Extract the DataArray from the integrator object
+        # img1D = integrator.boxcut1D_xr  # Extract the DataArray from the integrator object
 
         plt.close('all')
         plt.figure(figsize=(10, 6))
@@ -1330,10 +1330,10 @@ class Azimuth1D(Integration1D):
         # Create a 1D line plot with continuous lines
         plt.plot(qr_bins, azimuthal_sum, color='blue', linestyle='-')
         
-        # Highlight bins with gaps in red
-        for i, gap in enumerate(gaps):
-            if gap:
-                plt.axvline(qr_bins[i], color='red', linestyle='--', linewidth=2)
+        # # Highlight bins with gaps in red
+        # for i, gap in enumerate(gaps):
+        #     if gap:
+        #         plt.axvline(qr_bins[i], color='red', linestyle='--', linewidth=2)
 
         plt.xlabel('qr')
         plt.ylabel('Summed Intensity')
@@ -1347,10 +1347,10 @@ class Azimuth1D(Integration1D):
         # Create a 1D line plot by chi with continuous lines
         plt.plot(chi_bins, azimuthal_sum_by_chi, color='blue', linestyle='-')
         
-        # Highlight bins with gaps in red
-        for i, gap in enumerate(gaps_by_chi):
-            if gap:
-                plt.axvline(chi_bins[i], color='red', linestyle='--', linewidth=2)
+        # # Highlight bins with gaps in red
+        # for i, gap in enumerate(gaps_by_chi):
+        #     if gap:
+        #         plt.axvline(chi_bins[i], color='red', linestyle='--', linewidth=2)
 
         plt.xlabel('chi')
         plt.ylabel('Summed Intensity')
