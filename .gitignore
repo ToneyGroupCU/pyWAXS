@@ -3,7 +3,7 @@
 cif_repo_local/
 examples_local/
 nslsii_pyWAXS/
-KW_WAXSAnalysis.ipynb
+# KW_WAXSAnalysis.ipynb
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
