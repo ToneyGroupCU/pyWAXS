@@ -83,20 +83,6 @@ class WAXSReduce:
         # -- TIFF IMAGE DATA -- ##
         self.rawtiff_np = None # datatype: numpy array, RAW TIFF (numpy)
         self.rawtiff_xr = None # datatype: xarray DataArray, RAW TIFF (xarray)
-        
-        '''
-        # # Check if zarrPath is provided
-        # if zarrPath is not None:
-        #     self.zarrPath = zarrPath
-        #     if projectName:
-        #         self.projectName = projectName
-        #         self.loadzarr(zarrPath = self.zarrPath, 
-        #                       projectName = self.projectName)
-        # else:
-        #     # Check that the required parameters are provided
-        #     if poniPath is None or maskPath is None or tiffPath is None:
-        #         raise ValueError("Must provide either zarrPath or poniPath, maskPath, and tiffPath.")
-        '''
 
         # - Load the Single Image
         self.loadSingleImage(self.tiffPath)
@@ -120,6 +106,14 @@ class WAXSReduce:
 
         # - General Data Operations
         self.ds = None # temporary dataarray
+
+        # - 1D Integrations
+        self.integrate1d_da = None
+        self.integrate1d_method = 'bbox'
+        self.npt = 1024
+        self.correctSolidAngle=True
+        self.polarization_factor = None
+        
 
 ## --- DATA LOADING & METADATA EXTRACTION --- ##
     # -- Image Loading
@@ -185,45 +179,6 @@ class WAXSReduce:
         return self.attribute_dict
 
 ## --- PROJECT EXPORTING & IMPORTING --- ##
-
-    '''
-    # -- Exports the current class instantiation when called.
-    # def exportzarr(self, zarrPath: Union[str, pathlib.Path], projectName: str):
-    #     # Create the project directory
-    #     project_path = pathlib.Path(zarrPath) / projectName
-    #     if project_path.exists():
-    #         # Handle existing project folder (e.g., ask for confirmation or raise an error)
-    #         raise FileExistsError(f"Project folder '{project_path}' already exists. Choose a different project name or remove the existing folder.")
-    #     project_path.mkdir(parents=True, exist_ok=False)  # exist_ok=False ensures that an error is raised if the folder exists
-
-    #     # Save xarray DataArrays as Zarr files and TIFF images
-    #     for key in ['rawtiff_xr', 'reciptiff_xr', 'cakedtiff_xr']:
-    #         ds = self.__dict__[key].to_dataset(name=key)
-    #         ds_path = project_path / f"{key}.zarr"
-    #         ds.to_zarr(ds_path)
-
-    #         # Convert the xarray DataArray to a numpy array and save as TIFF
-    #         tiff_image = ds[key].values
-    #         tiff_path = project_path / f"{projectName}_{key}.tiff"
-    #         with TiffWriter(str(tiff_path)) as tif:
-    #             tif.save(tiff_image.astype(np.uint16))  # Adjust dtype as needed
-
-    #     # Save other attributes to a JSON file
-    #     attributes_to_save = {
-    #         'basePath': str(self.basePath),
-    #         'poniPath': str(self.poniPath),
-    #         'maskPath': str(self.maskPath),
-    #         'tiffPath': str(self.tiffPath),
-    #         'metadata_keylist': self.metadata_keylist,
-    #         'attribute_dict': self.attribute_dict,
-    #         'energy': self.energy,
-    #     }
-    #     json_path = project_path / "attributes.json"
-    #     with open(json_path, 'w') as file:
-    #         json.dump(attributes_to_save, file)
-
-    '''
-
     # # -- Imports the current class instantiation when called.
     def load_xarray_dataset(self, file_path: Path) -> xr.Dataset:
         if not file_path.exists():
@@ -251,6 +206,74 @@ class WAXSReduce:
                                          maskPath = self.maskPath,
                                          energy = self.energy) # Additional parameters if needed, such as pixel splitting method or corrections (solid angle)
         return GIXSTransformObj
+
+    def run_pg_integrate1D(self, 
+                            npt: int = None, 
+                            method: str = None, 
+                            correctSolidAngle: bool = None, 
+                            polarization_factor: float = None):
+        """
+        Run the pg_integrate1D method from the WAXSTransform class.
+
+        Parameters:
+        - npt (int): Number of points in output data.
+        - method : str
+            Integration method. Can be "np", "cython", "bbox", "splitpix", "lut" or "lut_ocl" (if you want to go on GPU)
+        - correctSolidAngle (bool): Whether to correct for the solid angle of each pixel.
+        - polarization_factor (float): Polarization factor for the integration.
+        """
+        
+        # Update attributes if provided
+        if npt is not None:
+            self.npt = npt
+        if method is not None:
+            self.integrate1d_method = method
+        if correctSolidAngle is not None:
+            self.correctSolidAngle = correctSolidAngle
+        if polarization_factor is not None:
+            self.polarization_factor = polarization_factor
+        
+        # Run the pg_integrate1D method from WAXSTransform object
+        self.integrate1d_da = self.GIXSTransformObj.pg_integrate1D(self.rawtiff_xr,
+                                                                npt=self.npt,
+                                                                method=self.integrate1d_method,
+                                                                correctSolidAngle=self.correctSolidAngle,
+                                                                polarization_factor=self.polarization_factor)
+        # Store the method parameters as attributes in the DataArray
+        self.integrate1d_da.attrs['npt'] = self.npt
+        self.integrate1d_da.attrs['method'] = self.integrate1d_method
+        self.integrate1d_da.attrs['correctSolidAngle'] = self.correctSolidAngle
+        self.integrate1d_da.attrs['polarization_factor'] = self.polarization_factor
+
+    def plot_and_save_qr_intensity(self, output_path: Union[str, pathlib.Path] = None, save_xy: bool = False, save_png: bool = False):
+        if output_path is None:
+            output_path = pathlib.Path.cwd()
+        else:
+            output_path = pathlib.Path(output_path)
+
+        # Generate dynamic filename
+        timestamp = datetime.now().strftime('%y%m%d_%H%M%S_')
+        metadata_values = '_'.join([str(self.attribute_dict[key]) for key in self.metadata_keylist[:3]])
+        dynamic_filename = f"{timestamp}{metadata_values}_npt{self.npt}_method{self.integrate1d_method}"
+
+        # Plot qr vs. intensity
+        plt.plot(self.integrate1d_da['qr'], self.integrate1d_da)
+        plt.xlabel('qr (1/Å)')
+        plt.ylabel('Intensity (a.u.)')
+        plt.title('1D Integration')
+
+        if save_png:
+            plt.savefig(output_path / f"{dynamic_filename}.png")
+            
+        plt.show()
+
+        if save_xy:
+            # Prepare header and save as .xy file
+            header = f"# Metadata: npt={self.npt}, method={self.integrate1d_method}, correctSolidAngle={self.correctSolidAngle}, polarization_factor={self.polarization_factor}"
+            data = np.column_stack((self.integrate1d_da['qr'], self.integrate1d_da))
+            np.savetxt(output_path / f"{dynamic_filename}.xy", data, header=header)
+
+        print(f"Files saved to: {output_path}")
 
     # -- Generate the caked and reciprocal space corrected datasets.
     def apply_image_corrections(self):
@@ -1762,3 +1785,42 @@ class ImageInterpolator:
         edge_img = self.edge_detection(img, method=edge_method)
         gaps = self.classify_gaps(edge_img)
         return self.interpolate_gaps(img, gaps, threshold)
+    
+
+    '''
+    # -- Exports the current class instantiation when called.
+    # def exportzarr(self, zarrPath: Union[str, pathlib.Path], projectName: str):
+    #     # Create the project directory
+    #     project_path = pathlib.Path(zarrPath) / projectName
+    #     if project_path.exists():
+    #         # Handle existing project folder (e.g., ask for confirmation or raise an error)
+    #         raise FileExistsError(f"Project folder '{project_path}' already exists. Choose a different project name or remove the existing folder.")
+    #     project_path.mkdir(parents=True, exist_ok=False)  # exist_ok=False ensures that an error is raised if the folder exists
+
+    #     # Save xarray DataArrays as Zarr files and TIFF images
+    #     for key in ['rawtiff_xr', 'reciptiff_xr', 'cakedtiff_xr']:
+    #         ds = self.__dict__[key].to_dataset(name=key)
+    #         ds_path = project_path / f"{key}.zarr"
+    #         ds.to_zarr(ds_path)
+
+    #         # Convert the xarray DataArray to a numpy array and save as TIFF
+    #         tiff_image = ds[key].values
+    #         tiff_path = project_path / f"{projectName}_{key}.tiff"
+    #         with TiffWriter(str(tiff_path)) as tif:
+    #             tif.save(tiff_image.astype(np.uint16))  # Adjust dtype as needed
+
+    #     # Save other attributes to a JSON file
+    #     attributes_to_save = {
+    #         'basePath': str(self.basePath),
+    #         'poniPath': str(self.poniPath),
+    #         'maskPath': str(self.maskPath),
+    #         'tiffPath': str(self.tiffPath),
+    #         'metadata_keylist': self.metadata_keylist,
+    #         'attribute_dict': self.attribute_dict,
+    #         'energy': self.energy,
+    #     }
+    #     json_path = project_path / "attributes.json"
+    #     with open(json_path, 'w') as file:
+    #         json.dump(attributes_to_save, file)
+
+    '''

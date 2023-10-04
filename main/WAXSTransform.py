@@ -257,7 +257,8 @@ class WAXSTransform:
         mask = self.load_mask(dataarray)
 
         # Perform 1D integration
-        qaxis_1d, intensity_1d = pg.integrate_1d(dataarray.data,
+        # qaxis_1d, intensity_1d = pg.integrate_1d(dataarray.data,
+        intensity_1d, qaxis_1d = pg.integrate_1d(dataarray.data,
                                                 npt=npt,
                                                 method=method,
                                                 unit='q_A^-1',
@@ -271,7 +272,9 @@ class WAXSTransform:
                                     coords={'qr': ('qr', qaxis_1d, {'units': '1/Å'})},
                                     attrs=dataarray.attrs)
         
-        return integrate1d_da
+        self.integrate1d_da = integrate1d_da
+
+        return self.integrate1d_da
 
 
     '''
