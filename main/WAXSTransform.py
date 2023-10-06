@@ -195,6 +195,7 @@ class WAXSTransform:
         caked_data, qr, chi = pg.transform_image(da.data, 
                                                  process='polar',
                                                  method = 'bbox',
+                                                #  method = 'splitpix',
                                                  unit='q_A^-1',
                                                  mask=mask,
                                                  correctSolidAngle=True)
