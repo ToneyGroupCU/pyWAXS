@@ -18,8 +18,8 @@ import scipy.ndimage as ndimage
 
 # -------- Matplotlib -------- #
 import matplotlib
-import matplotlib.pyplot as plt
 from matplotlib.pyplot import subplots
+import matplotlib.pyplot as plt
 import matplotlib as mpl
 from matplotlib import cm
 import matplotlib.tri as tri

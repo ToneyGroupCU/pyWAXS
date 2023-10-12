@@ -1,6 +1,6 @@
 import os, pathlib, tifffile, pyFAI, pygix, json, zarr, random, inspect
 from PIL import Image
-from typing import Union, Tuple
+from typing import Union, Tuple, Optional
 import matplotlib.pyplot as plt
 from tifffile import TiffWriter
 import xarray as xr
@@ -40,6 +40,7 @@ from pathlib import Path
 from datetime import datetime
 # from matplotlib.path import Path
 from matplotlib.path import Path as MatplotlibPath
+
 
 # - Custom Imports
 from WAXSTransform import WAXSTransform
@@ -114,7 +115,6 @@ class WAXSReduce:
         self.correctSolidAngle=True
         self.polarization_factor = None
         
-
 ## --- DATA LOADING & METADATA EXTRACTION --- ##
     # -- Image Loading
     def loadSingleImage(self, tiffPath: Union[str, pathlib.Path, np.ndarray]):
@@ -1156,6 +1156,121 @@ class Integration1D(WAXSReduce):
         plt.tight_layout()
         plt.show()
 
+## -- WAXS TOPAS Class: Generates input files for TOPAS -- ## 
+
+class WAXSTOPAS(WAXSReduce):
+    def __init__(self, 
+                 projectPath: Union[str, Path], 
+                 waxs_instance=None, 
+                 *args, **kwargs):
+        if waxs_instance:
+            self.__dict__.update(waxs_instance.__dict__)
+        else:
+            super().__init__(*args, **kwargs)
+        
+        # Calculate the wavelength based on the energy
+        self.wavelength = np.round((4.1357e-15 * 2.99792458e8) / (self.energy * 1000), 13)
+        
+        # Generate the TOPAS project path
+        self.generate_topas_projectpath(projectPath)
+
+        # Generate project name
+        self.projectname = projectPath.name if isinstance(projectPath, Path) else Path(projectPath).name
+        
+    def generate_topas_projectpath(self, projectPath: Union[str, Path]):
+        """
+        Generate the project path where TOPAS related files will be stored.
+        
+        Parameters:
+        - projectPath (Union[str, Path]): The project directory where the 'topas7_project' folder will be created.
+        """
+        
+        # Make sure the projectPath exists
+        projectPath = Path(projectPath)
+        if not projectPath.exists():
+            raise ValueError(f"The provided project path {projectPath} does not exist.")
+        
+        # Create 'topas7_project' folder if it doesn't exist
+        self.topasPath = projectPath / 'topas7_project'
+        self.topasPath.mkdir(exist_ok=True)
+        
+    def generate_xye_file(self, output_filename: Optional[str] = None):
+        """
+        Generate a .xye file from the 1D integrated DataArray.
+        
+        Parameters:
+        - output_filename (Optional[str]): The name of the output .xye file. If not provided, a default name will be generated.
+        """
+        
+        # Check if the integrate1d_da DataArray is None or contains only NaN values
+        if self.integrate1d_da is None or np.isnan(self.integrate1d_da.values).all():
+            # If it's None or filled with NaNs, run the 1D integration
+            self.run_pg_integrate1D(npt=1024, 
+                                    method='bbox', 
+                                    correctSolidAngle=True, 
+                                    polarization_factor=None)
+        
+        # Create 'twotheta' dimension based on 'qr'
+        
+        # twotheta_values = 2 * np.arcsin(self.wavelength * self.integrate1d_da['qr'].values / (4 * np.pi))
+        # twotheta_values = 2 * (180 / np.pi) * np.arcsin(self.wavelength * self.integrate1d_da['qr'].values / (4 * np.pi))
+                # Inline conversion from meters to Angstroms, and then calculate 'twotheta'
+        twotheta_values = 2 * np.arcsin((self.wavelength * 1e10) * self.integrate1d_da['qr'].values / (4 * np.pi)) * (180 / np.pi)  # Convert radians to degrees
+        self.integrate1d_da = self.integrate1d_da.assign_coords({'twotheta': ('qr', twotheta_values)})
+        
+        # Create 'root_int_error' dimension based on intensity
+        root_int_error = np.sqrt(self.integrate1d_da.values)
+        self.integrate1d_da = self.integrate1d_da.assign_coords({'root_int_error': ('qr', root_int_error)})
+
+        # Define the output file path
+        if output_filename is None:
+            timestamp = datetime.now().strftime('%y%m%d_%H%M%S')
+            output_filename = f"{self.projectname}_{timestamp}_topas.xye"
+        
+        output_filepath = self.topasPath / output_filename
+
+        # Write the .xye file
+        with output_filepath.open('w') as f:
+            for x, y, e in zip(self.integrate1d_da['twotheta'].values, self.integrate1d_da.values, self.integrate1d_da['root_int_error'].values):
+                f.write(f"{x} {y} {e}\n")
+        
+        # Generate the complementary .txt file for metadata
+        txt_filename = output_filename.replace('.xye', '_metadata.txt')
+        self.generate_metadata_txt(txt_filename)
+
+    def generate_metadata_txt(self, output_filename: str):
+        """
+        Generate a .txt file containing metadata attributes.
+        
+        Parameters:
+        - output_filename (str): The name of the output .txt file.
+        """
+        
+        output_filepath = self.topasPath / output_filename
+        
+        with output_filepath.open('w') as f:
+            f.write("Metadata Information\n")
+            f.write("====================\n")
+            
+            # Extract attributes from the 1D integrated DataArray
+            f.write(f"Integration Method: {self.integrate1d_method}\n")
+            f.write(f"Number of Points (npt): {self.npt}\n")
+            f.write(f"Correct Solid Angle: {self.correctSolidAngle}\n")
+            f.write(f"Polarization Factor: {self.polarization_factor}\n")
+            
+            # Additional attributes from WAXSReduce
+            f.write(f"Energy: {self.energy} keV\n")
+            f.write(f"Wavelength: {self.wavelength} Å\n")
+            f.write(f"PONI Path: {str(self.poniPath)}\n")
+            f.write(f"Mask Path: {str(self.maskPath)}\n")
+            f.write(f"Incident Angle: {self.incident_angle}\n")
+            
+            # Metadata dictionary
+            f.write("Additional Metadata:\n")
+            for key, value in self.attribute_dict.items():
+                f.write(f"{key}: {value}\n")
+
+## -- Custom Azimuthal Integration & Pixel Splitting -- ##
 class Azimuth1D(Integration1D):
     def __init__(self, parent_instance=None):
         # Check if a parent_instance is provided, otherwise create a new instance
