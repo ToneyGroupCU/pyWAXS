@@ -34,6 +34,10 @@ from collections import namedtuple
 from IPython.display import clear_output
 from typing import Optional
 import matplotlib.pyplot as plt
+import pandas as pd
+from itertools import combinations
+from typing import Dict, List
+import seaborn as sns
 
 class WAXSSearch:
     def __init__(self, data):
@@ -104,7 +108,7 @@ class WAXSSearch:
         initial_peaks = self.handle_edge_cases(img_xr, initial_peaks, edge_percentage=edge_percentage)
         
         # Debugging information
-        print("Number of initial peaks:", np.count_nonzero(~np.isnan(initial_peaks)))
+        # print("Number of initial peaks:", np.count_nonzero(~np.isnan(initial_peaks)))
 
         # Step 4: Recenter Peaks
         valid_peak_coords = np.column_stack(np.where(~np.isnan(initial_peaks)))
@@ -115,7 +119,7 @@ class WAXSSearch:
         for coord in recentered_peak_coords:
             recentered_peaks[coord[0], coord[1]] = self.DoG[coord[0], coord[1]]
 
-        print("Number of recentered peaks:", np.count_nonzero(~np.isnan(recentered_peaks)))
+        # print("Number of recentered peaks:", np.count_nonzero(~np.isnan(recentered_peaks)))
         
         # Step 5: Cluster Local Maxima
         peaks = self.cluster_local_maxima(recentered_peaks, method=clustering_method, eps=eps, min_samples=min_samples)
@@ -129,7 +133,7 @@ class WAXSSearch:
         # Replace edge peaks in the final peak map
         peaks[edge_zone] = valid_edge_peaks[edge_zone]
 
-        print("Number of final peaks:", np.count_nonzero(~np.isnan(peaks)))
+        # print("Number of final peaks:", np.count_nonzero(~np.isnan(peaks)))
 
         # Initialize a new DataArray for peak positions with same dimensions and coordinates as the original data
         peak_positions = xr.DataArray(np.full_like(img_xr, np.nan), coords=img_xr.coords, dims=img_xr.dims)
@@ -486,7 +490,105 @@ class WAXSSearch:
             self.dataset = xr.open_dataset(file_path, engine='h5netcdf')
         else:
             raise ValueError("Invalid file path. Must be a string or a pathlib.Path object.")
+
+class SensitivityAnalysis:
+    def __init__(self, simulate_function, df_columns: List[str]):
+        self.simulate_function = simulate_function
+        self.df_columns = df_columns
+        self.results_df = pd.DataFrame(columns=df_columns)
+
+        # Define constant and range parameters
+        self.const_params = {
+            'sigma1': 1, 'sigma2': 2, 'threshold': 0.006, 'clustering_method': 'DBSCAN',
+            'eps': 1, 'min_samples': 2, 'k': 3, 'radius': 5, 'edge_percentage': 2, 'stricter_threshold': 5
+        }
+        self.param_ranges = {
+            'sigma1': np.linspace(0.5, 1.5, 11), 'sigma2': np.linspace(1.5, 2.5, 11),
+            'threshold': np.linspace(0.004, 0.008, 11), 'eps': np.linspace(0.5, 1.5, 11),
+            'min_samples': np.arange(1, 6, 1), 'k': np.arange(2, 6, 1),
+            'radius': np.linspace(3, 7, 9), 'edge_percentage': np.linspace(1, 5, 9),
+            'stricter_threshold': np.linspace(3, 7, 9)
+        }
+
+    def run_individual_sensitivity_analysis(self):
+        for param, values in self.param_ranges.items():
+            num_peaks = []
+            for value in values:
+                test_params = self.const_params.copy()
+                test_params[param] = value
+                num_detected_peaks = self.simulate_function(**test_params)
+                num_peaks.append(num_detected_peaks)
+            new_df = pd.DataFrame({param: values, 'num_peaks': num_peaks})
+            self.results_df = pd.concat([self.results_df, new_df], ignore_index=True)
+
+    def plot_results(self):
+        for param in self.param_ranges.keys():
+            subset = self.results_df[[param, 'num_peaks']].dropna()
+            plt.figure()
+            plt.plot(subset[param], subset['num_peaks'], marker='o')
+            plt.title(f"Sensitivity Analysis for {param}")
+            plt.xlabel(param)
+            plt.ylabel('Number of Detected Peaks')
+            plt.grid(True)
+            plt.show()
+
+    def calculate_covariance(self):
+        df = self.results_df.apply(pd.to_numeric, errors='ignore')
+        cov_matrix = df.cov()
+        cov_with_num_peaks = cov_matrix.loc['num_peaks'].drop('num_peaks')
+        sorted_cov = cov_with_num_peaks.sort_values(ascending=False)
+        return sorted_cov
     
+    def save_to_netcdf(self, file_path: str):
+        self.results_df.to_xarray().to_netcdf(file_path)
+    
+    def load_from_netcdf(self, file_path: str) -> pd.DataFrame:
+        """
+        Load a DataFrame from a NETCDF file.
+        
+        Parameters:
+        - file_path (str): The file path to load the DataFrame from.
+        
+        Returns:
+        - pd.DataFrame: The loaded DataFrame.
+        """
+        dataset = xr.open_dataset(file_path)
+        # Replace 'correct_variable_name' with the actual variable name you're interested in
+        self.results_df = dataset['correct_variable_name'].to_dataframe()
+        return self.results_df
+
+    def calculate_covariance(self) -> pd.DataFrame:
+        """
+        Calculate the covariance and correlation of each parameter with the output ('num_peaks').
+        
+        Returns:
+        - pd.DataFrame: A DataFrame containing the covariance and correlation of each parameter with 'num_peaks'.
+        """
+        # Convert columns to appropriate data types
+        df = self.results_df.apply(pd.to_numeric, errors='ignore')
+        
+        # Compute the covariance matrix
+        cov_matrix = df.cov()
+        
+        # Compute the correlation matrix
+        corr_matrix = df.corr()
+        
+        # Extract the 'num_peaks' row to find the covariance and correlation between 'num_peaks' and each parameter
+        cov_with_num_peaks = cov_matrix.loc['num_peaks'].drop('num_peaks')
+        corr_with_num_peaks = corr_matrix.loc['num_peaks'].drop('num_peaks')
+        
+        # Combine into a single DataFrame
+        summary_df = pd.DataFrame({
+            'Covariance': cov_with_num_peaks,
+            'Correlation': corr_with_num_peaks
+        })
+        
+        # Sort by absolute value of correlation for easier interpretation
+        summary_df['Abs_Correlation'] = summary_df['Correlation'].abs()
+        summary_df = summary_df.sort_values('Abs_Correlation', ascending=False).drop('Abs_Correlation', axis=1)
+        
+        return summary_df
+
 '''
 ## -- PeakSearch for an Xarray DataSet    
 class PeakSearch2D:

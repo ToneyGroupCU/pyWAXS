@@ -1157,7 +1157,6 @@ class Integration1D(WAXSReduce):
         plt.show()
 
 ## -- WAXS TOPAS Class: Generates input files for TOPAS -- ## 
-
 class WAXSTOPAS(WAXSReduce):
     def __init__(self, 
                  projectPath: Union[str, Path], 
