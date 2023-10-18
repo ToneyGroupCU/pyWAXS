@@ -4,9 +4,12 @@ cif_repo_local/
 examples_local/
 nslsii_pyWAXS/
 refactored/
-main/outputs/
-main/debugging/
-example/
+outputs/
+debugging/
+notebooks/
+bash/
+# main/WAXSExperiment.py
+# example/
 # KW_WAXSAnalysis.ipynb
 
 # Byte-compiled / optimized / DLL files
