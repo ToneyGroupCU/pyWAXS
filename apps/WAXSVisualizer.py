@@ -6,6 +6,7 @@ import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import matplotlib.cm as cm
 import math
+
 class ImageApp:
 
     def __init__(self, root):

@@ -1,6 +1,6 @@
-from .MoleculeConstructor import MoleculeConstructor
-from .pyWAXS import pyWAXS
-from .pyWAXSim import pyWAXSim
+# from .pyWAXS import pyWAXS
+# from .pyWAXSim import pyWAXSim
+# from .WAXSVisualizer import WAXSVisualizer
 from .WAXSAFF import WAXSAFF
 from .WAXSAnalyze import WAXSAnalyze
 from .WAXSComputeCrystal import WAXSComputeCrystal
@@ -11,4 +11,4 @@ from .WAXSReduce import WAXSReduce
 from .WAXSReverse import WAXSReverse
 from .WAXSSearch import WAXSSearch
 from .WAXSTransform import WAXSTransform
-from .WAXSVisualizer import WAXSVisualizer
+from .MoleculeConstructor import MoleculeConstructor

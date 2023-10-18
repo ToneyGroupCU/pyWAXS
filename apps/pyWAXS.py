@@ -18,8 +18,8 @@ import numpy as np
 from pathlib import Path
 
 # -- Custom Imports -- #
-from WAXSReduce import WAXSReduce
-from WAXSReduce import Integration1D
+# from WAXSReduce import WAXSReduce
+# from WAXSReduce import Integration1D
 # from pyWAXSim import SimulatedIntensityWindow
 
 class MyTableWidget(QTableWidget):

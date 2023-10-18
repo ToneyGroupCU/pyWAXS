@@ -10,9 +10,9 @@ from matplotlib.text import Text
 from matplotlib.figure import Figure
 
 # -- Custom Imports -- #
-from pyWAXS import MyCanvas
-from WAXSDiffSim import WAXSDiffSim
-import WAXSAFF
+# from pyWAXS import MyCanvas
+# from WAXSDiffSim import WAXSDiffSim
+# import WAXSAFF
 
 # Standard imports
 import numpy as np
