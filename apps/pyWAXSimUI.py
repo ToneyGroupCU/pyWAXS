@@ -9,16 +9,31 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
 from matplotlib.text import Text
 from matplotlib.figure import Figure
 
+# Standard imports
+import numpy as np
+import os, sys
+from pathlib import Path
+from typing import Union, List
+
+# Get the directory of the current script
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Get the parent directory
+parent_dir = os.path.dirname(script_dir)
+
+# Construct the path to the /main/ directory
+main_dir = os.path.join(parent_dir, 'main')
+
+# Add the /main/ directory to sys.path
+sys.path.append(main_dir)
+
 # -- Custom Imports -- #
 # from pyWAXS import MyCanvas
 # from WAXSDiffSim import WAXSDiffSim
 # import WAXSAFF
-
-# Standard imports
-import numpy as np
-import os
-from pathlib import Path
-from typing import Union, List
+from pyWAXSUI import MyCanvas
+import WAXSDiffSim # type: ignore
+import WAXSAFF # type: ignore
 
 class SimWindow(QMainWindow):
     def __init__(self):

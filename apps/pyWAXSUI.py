@@ -21,6 +21,26 @@ from pathlib import Path
 # from WAXSReduce import WAXSReduce
 # from WAXSReduce import Integration1D
 # from pyWAXSim import SimulatedIntensityWindow
+# from pyWAXS import WAXSReduce
+# from WAXSReduce import Integration1D
+# from pyWAXSimUI import SimulatedIntensityWindow
+
+# from pyWAXSimUI import SimWindow
+
+# Get the directory of the current script
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Get the parent directory
+parent_dir = os.path.dirname(script_dir)
+
+# Construct the path to the /main/ directory
+main_dir = os.path.join(parent_dir, 'main')
+
+# Add the /main/ directory to sys.path
+sys.path.append(main_dir)
+
+import WAXSReduce # type: ignore
+from WAXSReduce import Integration1D # type: ignore
 
 class MyTableWidget(QTableWidget):
     row_selected = pyqtSignal(int)  # Signal to emit the selected row index
