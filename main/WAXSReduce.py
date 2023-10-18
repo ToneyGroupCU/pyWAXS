@@ -4,6 +4,7 @@ from typing import Union, Tuple, Optional
 import matplotlib.pyplot as plt
 from tifffile import TiffWriter
 import xarray as xr
+from xarray import DataArray, concat
 import numpy as np
 from numpy.polynomial.polynomial import Polynomial
 # -- SciPy Modules 
@@ -34,13 +35,12 @@ from collections import defaultdict
 from collections import Counter
 from collections import namedtuple
 from IPython.display import clear_output
-from typing import Optional
+from typing import Optional, Tuple, Union
 import gc
 from pathlib import Path
 from datetime import datetime
 # from matplotlib.path import Path
 from matplotlib.path import Path as MatplotlibPath
-
 
 # - Custom Imports
 from WAXSTransform import WAXSTransform
@@ -114,6 +114,16 @@ class WAXSReduce:
         self.npt = 1024
         self.correctSolidAngle=True
         self.polarization_factor = None
+
+        # Initialize default values for pyFAI_integrate1D parameters if needed
+        self.npt = 2250
+        self.correctSolidAngle = True
+        self.method = ("full", "histogram", "cython")
+        self.polarization_factor = None
+        self.dark = None
+        self.flat = None
+        self.radial_range = None
+        self.azimuth_range = None
         
 ## --- DATA LOADING & METADATA EXTRACTION --- ##
     # -- Image Loading
@@ -211,7 +221,8 @@ class WAXSReduce:
                             npt: int = None, 
                             method: str = None, 
                             correctSolidAngle: bool = None, 
-                            polarization_factor: float = None):
+                            polarization_factor: float = None,
+                            unit: str = None):
         """
         Run the pg_integrate1D method from the WAXSTransform class.
 
@@ -232,18 +243,87 @@ class WAXSReduce:
             self.correctSolidAngle = correctSolidAngle
         if polarization_factor is not None:
             self.polarization_factor = polarization_factor
-        
+        if unit is not None:
+            self.unit = unit
+        else:
+            self.unit = 'q_A^-1'
+
         # Run the pg_integrate1D method from WAXSTransform object
         self.integrate1d_da = self.GIXSTransformObj.pg_integrate1D(self.rawtiff_xr,
                                                                 npt=self.npt,
                                                                 method=self.integrate1d_method,
                                                                 correctSolidAngle=self.correctSolidAngle,
-                                                                polarization_factor=self.polarization_factor)
+                                                                polarization_factor=self.polarization_factor,
+                                                                unit=self.unit)
         # Store the method parameters as attributes in the DataArray
         self.integrate1d_da.attrs['npt'] = self.npt
         self.integrate1d_da.attrs['method'] = self.integrate1d_method
         self.integrate1d_da.attrs['correctSolidAngle'] = self.correctSolidAngle
         self.integrate1d_da.attrs['polarization_factor'] = self.polarization_factor
+        self.integrate1d_da.attrs['unit'] = self.unit
+
+    def run_pyFAI_integrate1D(self,
+                            npt: Optional[int] = 2250,
+                            correctSolidAngle: Optional[bool] = True,
+                            method: Optional[Union[str, Tuple[str, str, str]]] = ("full", "histogram", "cython"),
+                            polarization_factor: Optional[float] = None,
+                            unit: Optional[str] = None,
+                            dark: Optional[float] = None,
+                            flat: Optional[float] = None,
+                            radial_range: Optional[Tuple[float, float]] = None,
+                            azimuth_range: Optional[Tuple[float, float]] = None) -> None:
+        """
+            Run the pyFAI_integrate1D method from the WAXSTransform class.
+
+            Parameters:
+            - npt (int): Number of points in output data.
+            - correctSolidAngle (bool): Correct for solid angle.
+            - method (Union[str, Tuple[str, str, str]]): Integration method.
+            - polarization_factor (float): Polarization factor.
+            - dark: Dark noise image.
+            - flat: Flat field image.
+            - radial_range (Tuple[float, float]): Radial range.
+            - azimuth_range (Tuple[float, float]): Azimuthal range.
+        """
+
+        self.npt = npt
+        self.correctSolidAngle = correctSolidAngle
+        self.method = method
+        self.polarization_factor = polarization_factor
+        self.dark = dark
+        self.flat = flat
+        self.radial_range = radial_range
+        self.azimuth_range = azimuth_range
+        # self.unit = unit
+
+        params = {'npt': self.npt,
+                'correctSolidAngle': self.correctSolidAngle,
+                'method': self.method,
+                'polarization_factor': self.polarization_factor,
+                'dark': self.dark,
+                'flat': self.flat,
+                'radial_range': self.radial_range,
+                'azimuth_range': self.azimuth_range} #,
+                # 'unit': self.unit}
+
+        # Perform the integration
+        integrate1d_result = self.GIXSTransformObj.pyFAI_integrate1D(self.rawtiff_xr, **params)
+
+        # # Create individual DataArrays
+        # q_da = DataArray(integrate1d_result.q, dims=['qr'], name='qr')
+        # I_da = DataArray(integrate1d_result.I, dims=['qr'], name='intensity')
+        # sigma_da = DataArray(integrate1d_result.sigma, dims=['qr'], name='sigma')
+
+        # # Create a single DataArray with qr as coordinate and intensity and sigma as dimensions
+        # combined_da = concat([I_da, sigma_da], dim='variable').assign_coords(qr=q_da)
+        # combined_da['variable'] = ['intensity', 'sigma']
+
+        # # Add metadata as attributes
+        # combined_da.attrs.update(params)
+
+        # # Store it as an attribute
+        # self.integrate1d_pyFAI_da = combined_da
+        return integrate1d_result
 
     def plot_and_save_qr_intensity(self, output_path: Union[str, pathlib.Path] = None, save_xy: bool = False, save_png: bool = False):
         if output_path is None:

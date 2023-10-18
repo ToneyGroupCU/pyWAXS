@@ -1,9 +1,11 @@
 import xarray as xr
+# from xarray import DataArray, concat
 import numpy as np
 import pygix  # type: ignore
 import fabio # fabio package for .edf imports
 import pathlib
 from typing import Union, Tuple
+import pyFAI
 # from PyHyperScattering.IntegrationUtils import DrawMask
 # from tqdm.auto import tqdm 
 
@@ -53,7 +55,8 @@ class WAXSTransform:
         
         self.integrate1d_da = None
 
-    def load_mask(self, da):
+    # def load_mask(self, da):
+    def load_mask(self):
         """Load the mask file based on its file type."""
 
         if isinstance(self.maskPath, np.ndarray):
@@ -173,7 +176,8 @@ class WAXSTransform:
             pg.wavelength = self.wavelength
 
         # Load mask
-        mask = self.load_mask(da)
+        # mask = self.load_mask(da)
+        mask = self.load_mask()
 
         
         # Cartesian 2D plot transformation
@@ -218,7 +222,12 @@ class WAXSTransform:
 
         return recip_da, caked_da
 
-    def pg_integrate1D(self, dataarray, npt = 1024, method = 'bbox', correctSolidAngle=True, polarization_factor = None):
+    def pg_integrate1D(self, dataarray, 
+                       npt = 1024, 
+                       method = 'bbox', 
+                       correctSolidAngle=True, 
+                       polarization_factor = None,
+                       unit = None):
         """
         Integrate 2D GIWAXS Images, Select Integration Method, Select Image Corrections
         
@@ -255,14 +264,20 @@ class WAXSTransform:
         #     pg.wavelength = self.wavelength
 
         # Load Mask
-        mask = self.load_mask(dataarray)
+        # mask = self.load_mask(dataarray)
+        mask = self.load_mask()
+
+        if unit is not None:
+            self.unit = unit
+        else:
+            self.unit = 'q_A^-1'
 
         # Perform 1D integration
         # qaxis_1d, intensity_1d = pg.integrate_1d(dataarray.data,
         intensity_1d, qaxis_1d = pg.integrate_1d(dataarray.data,
                                                 npt=npt,
                                                 method=method,
-                                                unit='q_A^-1',
+                                                unit=unit,
                                                 mask=mask,
                                                 correctSolidAngle=correctSolidAngle,
                                                 polarization_factor=polarization_factor)
@@ -274,105 +289,86 @@ class WAXSTransform:
                                     attrs=dataarray.attrs)
         
         self.integrate1d_da = integrate1d_da
-
+        self.intensity_1d = intensity_1d
+        self.qaxis_1d = qaxis_1d
+        
         return self.integrate1d_da
+        # return intensity_1d, qaxis_1d
 
+    def pyFAI_integrate1D(self, 
+                          dataarray, 
+                          npt=2250,
+                          correctSolidAngle=True,
+                          method=("full", "histogram", "cython"),
+                          polarization_factor=None, 
+                          dark=None, 
+                          flat=None,
+                          mask = None,
+                          radial_range=None, 
+                          azimuth_range=None
+                        #   unit="2th_deg"
+                        #   unit="q_A^-1"
+                        #   filename=None,
+                        #   mask=None, 
+                        #   method="csr", 
+                        #   variance=None, 
+                        #   error_model=None,
+                        #   dummy=None, 
+                        #   delta_dummy=None, 
+                        #   safe=True,
+                        #   normalization_factor=1.0,
+                        #   metadata=None
+                        ):
+            
+        """Calculate the azimuthal integration (1d) of a 2D image.
 
-    '''
-    def pg_integrate1D(self, dataarray, npt = 1024, method = 'bbox', correctSolidAngle=True, polarization_factor = None):
+        Multi algorithm implementation (tries to be bullet proof), suitable for SAXS, WAXS, ... and much more
+        Takes extra care of normalization and performs proper variance propagation.
+
+        :param ndarray data: 2D array from the Detector/CCD camera
+        :param int npt: number of points in the output pattern
+        :param str filename: output filename in 2/3 column ascii format
+        :param bool correctSolidAngle: correct for solid angle of each pixel if True
+        :param ndarray variance: array containing the variance of the data.
+        :param str error_model: When the variance is unknown, an error model can be given: "poisson" (variance = I), "azimuthal" (variance = (I-<I>)^2)
+        :param radial_range: The lower and upper range of the radial unit. If not provided, range is simply (min, max). Values outside the range are ignored.
+        :type radial_range: (float, float), optional
+        :param azimuth_range: The lower and upper range of the azimuthal angle in degree. If not provided, range is simply (min, max). Values outside the range are ignored.
+        :type azimuth_range: (float, float), optional
+        :param ndarray mask: array with  0 for valid pixels, all other are masked (static mask)
+        :param float dummy: value for dead/masked pixels (dynamic mask)
+        :param float delta_dummy: precision for dummy value
+        :param float polarization_factor: polarization factor between -1 (vertical) and +1 (horizontal).
+            0 for circular polarization or random,
+            None for no correction,
+            True for using the former correction
+        :param ndarray dark: dark noise image
+        :param ndarray flat: flat field image
+        :param IntegrationMethod method: IntegrationMethod instance or 3-tuple with (splitting, algorithm, implementation)
+        :param Unit unit: Output units, can be "q_nm^-1" (default), "2th_deg", "r_mm" for now.
+        :param bool safe: Perform some extra checks to ensure LUT/CSR is still valid. False is faster.
+        :param float normalization_factor: Value of a normalization monitor
+        :param metadata: JSON serializable object containing the metadata, usually a dictionary.
+        :return: Integrate1dResult namedtuple with (q,I,sigma) +extra informations in it.
         """
-        Integrate 2D GIWAXS Images, Select Integration Method, Select Image Corrections
-        
-        Inputs: Raw GIWAXS DataArray, Selected Methods
-        Outputs:
-
-        pg.integrate_1d Args:
-            data (ndarray): 2D array from detector (raw image).
-            npt (int): Number of points in output data.
-            correctSolidAngle (bool): Correct for solid angle of each pixel.
-            mask : ndarray
-                Masked pixel array (same size as image) with 1 for masked
-                pixels and 0 for valid pixels.
-            method : str
-                Integration method. Can be "np", "cython", "bbox",
-                "splitpix", "lut" or "lut_ocl" (if you want to go on GPU).
-            unit : str
-                Radial units. Can be "2th_deg", "2th_rad", "q_nm^-1" or
-                "q_A^-1" (TTH_DEG, TTH_RAD, Q_NM, Q_A).
-        """
-        
-        # # Get & Set Incidence Angle
-        # incident_angle = self.get_incident_angle(dataarray.attrs, ['incident_angle', 'thpos'], default=0.3)
-
-        # # Initialize pygix transform object
-        # pg = self.initialize_pg_transform(incident_angle)
-        
-        # # Load Mask
-        # mask = self.load_mask(dataarray)
-
-        # Initialize pygix transform object
-        pg = pygix.Transform()
-        pg.load(str(self.poniPath))
-        pg.sample_orientation = 3 # could add this as optional method parameter in the handle
-        
-        # Method to extract incident angle from attributes using list of possible aliases.
-        def get_incident_angle(attributes, aliases, default=0.3):
-            for alias in aliases:
-                if alias in attributes:
-                    # Extract numerical part from the string, including the decimal point
-                    numerical_part = ''.join(c for c in attributes[alias] if c.isdigit() or c == '.')
-                    # Check if the extracted part is a valid float number
-                    try:
-                        return float(numerical_part)
-                    except ValueError:
-                        pass
-            print(f"Warning: Incident angle not found. Defaulting to {default}. "
-                f"Allowed aliases for incident angle: {', '.join(aliases)}")
-            return default
-
-        # List of aliases to look for the incident angle
-        incident_angle_aliases = ['incident_angle', 
-                                  'thpos', 
-                                  'th', 
-                                  'theta', 
-                                  'incidence', 
-                                  'inc_angle', 
-                                  'angle_of_incidence'
-                                  'incang',
-                                  'incangle'
-                                  'inc_angle']
-
-        # Get & Set Incidence Angle
-        self.incident_angle = get_incident_angle(dataarray.attrs, incident_angle_aliases)
-        pg.incident_angle = self.incident_angle
-
-        # Set Wavelength
-        if self.wavelength:
-            pg.wavelength = self.wavelength
+                          
+        # ai = pyFAI.load(self.poniPath)
+        ai = pyFAI.load(str(self.poniPath))
 
         # Load Mask
-        mask = self.load_mask(dataarray)
+        mask = self.load_mask()
 
-        #integrate_1d Returns:
-            # qAxis, I : 2-tuple of ndarrays
-            #     Radial bins and integrated intensity.
+        int1d_array = ai.integrate1d_ng(dataarray.data,
+                                            npt=npt,
+                                            correctSolidAngle=correctSolidAngle,
+                                            method=method,
+                                            polarization_factor=polarization_factor, 
+                                            dark=dark, 
+                                            flat=flat,
+                                            radial_range=radial_range, 
+                                            azimuth_range=azimuth_range,
+                                            mask = mask)
+                                            # unit=unit)
 
-        # Perform 1D integration
-        qaxis_1d, intensity_1d = pg.integrate_1d(dataarray.data,
-                                                 npt=npt,
-                                                 method=method,
-                                                 unit='q_A^-1',
-                                                 mask=mask,
-                                                 correctSolidAngle=correctSolidAngle,
-                                                 polarization_factor=polarization_factor)
-        
-        # Create DataArray for integrated 1D data
-        integrate1d_da = xr.DataArray(data=intensity_1d,
-                                      dims=['qr'],
-                                      coords={'qr': ('qr', qaxis_1d, {'units': '1/Å'})},
-                                      attrs=dataarray.attrs)
-        
-        self.integrate1d_da = integrate1d_da
-
-        return integrate1d_da
-    '''
+        # print(method)
+        return int1d_array
