@@ -20,11 +20,7 @@ from pathlib import Path
 # -- Custom Imports -- #
 # from WAXSReduce import WAXSReduce
 # from WAXSReduce import Integration1D
-# from pyWAXSim import SimulatedIntensityWindow
-# from pyWAXS import WAXSReduce
-# from WAXSReduce import Integration1D
 # from pyWAXSimUI import SimulatedIntensityWindow
-
 # from pyWAXSimUI import SimWindow
 
 # Get the directory of the current script
