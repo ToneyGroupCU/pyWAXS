@@ -1,8 +1,8 @@
 from setuptools import setup, find_packages
-from distutils.core import setup
 import sys,os
 setup()
 
+# from distutils.core import setup
 # sys.path.append(os.path.dirname(__file__))
 # from setuptools import setup
 # setup()
