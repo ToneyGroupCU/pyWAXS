@@ -6,7 +6,6 @@ import math
 import numpy as np
 
 class WAXSFileManager:
-
     @staticmethod
     def create_folder_structure(basePath: Path, folder_name: str) -> None:
         main_folder = os.path.join(basePath, folder_name)
@@ -35,8 +34,11 @@ class WAXSFileManager:
         return df
     
     @staticmethod
-    def update_filePath(folderPath: Path, extension: str) -> Optional[Path]:
+    def update_filePath(folderPath: Path, extension: str, scanID: Optional[str] = None) -> Optional[Path]:
         files = list(folderPath.glob(f'*.{extension}'))
+
+        if scanID:
+            files = [f for f in files if f"_{scanID}_" in f.name]
 
         if len(files) > 1:
             raise ValueError(f"Multiple .{extension} files found in the folder.")

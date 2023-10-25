@@ -17,16 +17,6 @@ import xarray as xr
 import numpy as np
 from pathlib import Path
 
-# -- Custom Imports -- #
-# from WAXSReduce import WAXSReduce
-# from WAXSReduce import Integration1D
-# from pyWAXSim import SimulatedIntensityWindow
-# from pyWAXS import WAXSReduce
-# from WAXSReduce import Integration1D
-# from pyWAXSimUI import SimulatedIntensityWindow
-
-# from pyWAXSimUI import SimWindow
-
 # Get the directory of the current script
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -1103,17 +1093,35 @@ class MyCanvas(FigureCanvas):
 
     def update_table(self):
         self.tableWidget.setSortingEnabled(False)
+        
         if self.intensity is None or self.peak_positions is None:
             print("Intensity or peak_positions is not initialized.")
             return
+        
         y, x = np.where(self.peak_positions.values == 1)
-        chi_values = self.peak_positions.coords[self.peak_positions.dims[0]].values[y]
-        qr_values = self.peak_positions.coords[self.peak_positions.dims[1]].values[x]
-        chi_rad = np.radians(90 - chi_values)
-        qxy_values = qr_values * np.cos(chi_rad)
-        qz_values = qr_values * np.sin(chi_rad)
+        
+        dims = self.peak_positions.dims
+        is_qr_chi = 'qr' in dims and 'chi' in dims
+        is_qxy_qz = 'q_xy' in dims and 'q_z' in dims
+        
+        if is_qr_chi:
+            chi_values = self.peak_positions.coords[dims[0]].values[y]
+            qr_values = self.peak_positions.coords[dims[1]].values[x]
+            chi_rad = np.radians(90 - chi_values)
+            qxy_values = qr_values * np.cos(chi_rad)
+            qz_values = qr_values * np.sin(chi_rad)
+        elif is_qxy_qz:
+            qz_values = self.peak_positions.coords[dims[0]].values[y]
+            qxy_values = self.peak_positions.coords[dims[1]].values[x]
+            qr_values = np.sqrt(qxy_values**2 + qz_values**2)
+            chi_values = 90 - np.degrees(np.arctan2(qz_values, qxy_values))
+        else:
+            print("Unsupported dimensions.")
+            return
+        
         d_values = np.round((2 * np.pi) / qr_values, decimals=2).astype(np.float64)
-        intensity_values = [self.intensity.sel({self.peak_positions.dims[0]: chi, self.peak_positions.dims[1]: qr}).values.item() for chi, qr in zip(chi_values, qr_values)]
+        intensity_values = [self.intensity.sel({dims[0]: val0, dims[1]: val1}, method='nearest').values.item() for val0, val1 in zip(y, x)]
+            
         num_rows = len(qr_values)
         self.tableWidget.setRowCount(num_rows)
         self.tableWidget.setColumnCount(7)
