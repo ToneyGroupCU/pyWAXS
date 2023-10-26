@@ -111,9 +111,9 @@ class WAXSReduce:
         # - 1D Integrations
         self.integrate1d_da = None
         self.integrate1d_method = 'bbox'
-        self.npt = 1024
-        self.correctSolidAngle=True
-        self.polarization_factor = None
+        # self.npt = 1024
+        # self.correctSolidAngle=True
+        # self.polarization_factor = None
 
         # Initialize default values for pyFAI_integrate1D parameters if needed
         self.npt = 2250
@@ -124,6 +124,11 @@ class WAXSReduce:
         self.flat = None
         self.radial_range = None
         self.azimuth_range = None
+
+        self.integrate1d_da_pyfai = self.run_pyFAI_integrate1D(npt=2250, 
+                                        method=("full", "histogram", "cython"), 
+                                        correctSolidAngle=True, 
+                                        polarization_factor=0.95)
         
 ## --- DATA LOADING & METADATA EXTRACTION --- ##
     # -- Image Loading
@@ -262,6 +267,7 @@ class WAXSReduce:
         self.integrate1d_da.attrs['polarization_factor'] = self.polarization_factor
         self.integrate1d_da.attrs['unit'] = self.unit
 
+    '''
     def run_pyFAI_integrate1D(self,
                             npt: Optional[int] = 2250,
                             correctSolidAngle: Optional[bool] = True,
@@ -324,6 +330,81 @@ class WAXSReduce:
         # # Store it as an attribute
         # self.integrate1d_pyFAI_da = combined_da
         return integrate1d_result
+    '''
+
+    def run_pyFAI_integrate1D(self,
+                            npt: int = None,
+                            method: tuple = None,
+                            correctSolidAngle: bool = None,
+                            polarization_factor: float = None,
+                            dark: np.ndarray = None,
+                            flat: np.ndarray = None,
+                            radial_range: tuple = None,
+                            azimuth_range: tuple = None,
+                            unit: str = None):
+        """
+        Run the pyFAI_integrate1D method from the WAXSTransform class.
+
+        Parameters:
+        - npt (int): Number of points in output data.
+        - method (tuple): Integration method. Can be a tuple like ("full", "histogram", "cython").
+        - correctSolidAngle (bool): Whether to correct for the solid angle of each pixel.
+        - polarization_factor (float): Polarization factor for the integration.
+        - dark (np.ndarray): Dark noise image.
+        - flat (np.ndarray): Flat field image.
+        - radial_range (tuple): The lower and upper range of the radial unit.
+        - azimuth_range (tuple): The lower and upper range of the azimuthal angle.
+        - unit (str): The unit for the radial data, defaults to 'q_nm^-1' if not specified.
+        """
+
+        # Update attributes if provided
+        if npt is not None:
+            self.npt = npt
+        if method is not None:
+            self.integrate1d_method = method
+        if correctSolidAngle is not None:
+            self.correctSolidAngle = correctSolidAngle
+        if polarization_factor is not None:
+            self.polarization_factor = polarization_factor
+        if dark is not None:
+            self.dark = dark
+        if flat is not None:
+            self.flat = flat
+        if radial_range is not None:
+            self.radial_range = radial_range
+        if azimuth_range is not None:
+            self.azimuth_range = azimuth_range
+        if unit is not None:
+            self.unit = unit
+        else:
+            self.unit = 'q_A^-1'
+
+        # Run the pyFAI_integrate1D method from WAXSTransform object
+        self.integrate1d_da_pyfai = self.GIXSTransformObj.pyFAI_integrate1D(
+        # qr_nm, intensity1D = self.GIXSTransformObj.pyFAI_integrate1D(
+            self.rawtiff_xr,
+            npt=self.npt,
+            method=self.integrate1d_method,
+            correctSolidAngle=self.correctSolidAngle,
+            polarization_factor=self.polarization_factor,
+            dark=self.dark,
+            flat=self.flat,
+            radial_range=self.radial_range,
+            azimuth_range=self.azimuth_range)
+
+        # Store the method parameters as attributes in the DataArray
+        self.integrate1d_da_pyfai.attrs['npt'] = self.npt
+        self.integrate1d_da_pyfai.attrs['method'] = self.integrate1d_method
+        self.integrate1d_da_pyfai.attrs['correctSolidAngle'] = self.correctSolidAngle
+        self.integrate1d_da_pyfai.attrs['polarization_factor'] = self.polarization_factor
+        self.integrate1d_da_pyfai.attrs['dark'] = self.dark
+        self.integrate1d_da_pyfai.attrs['flat'] = self.flat
+        self.integrate1d_da_pyfai.attrs['radial_range'] = self.radial_range
+        self.integrate1d_da_pyfai.attrs['azimuth_range'] = self.azimuth_range
+        self.integrate1d_da_pyfai.attrs['unit'] = self.unit
+
+        return self.integrate1d_da_pyfai
+        # return qr_nm, intensity1D
 
     def plot_and_save_qr_intensity(self, output_path: Union[str, pathlib.Path] = None, save_xy: bool = False, save_png: bool = False):
         if output_path is None:
@@ -705,7 +786,56 @@ class WAXSReduce:
         plt.ylabel(ylabel)
         plt.colorbar()
         plt.show()
-  
+
+    def plot1D(self, x_axis='qr', pngPath=None, dpi=200, projectname=None):
+        """Plot 1D integrated data (qr or twotheta vs. intensity).
+        
+        Parameters:
+        - x_axis (str): Choose between 'qr' and 'twotheta' for the x-axis. Default is 'qr'.
+        - pngPath (pathlib.Path): Path to save the plot as a PNG file. If None, the plot won't be saved.
+        - dpi (int): DPI for saved PNG. Default is 200.
+        - projectname (str): Optional project name to include in the plot title.
+        """
+        
+        # Check if the data array exists
+        if self.integrate1d_da_pyfai is None:
+            print("Error: No integrated 1D data available.")
+            return
+        
+        # Check for 'twotheta' availability
+        if x_axis == 'twotheta' and 'twotheta' not in self.integrate1d_da_pyfai.coords:
+            print("Warning: 'twotheta' is not available. Defaulting to 'qr'.")
+            x_axis = 'qr'
+        
+        # Extract x and y values
+        x_values = self.integrate1d_da_pyfai[x_axis].values if x_axis in self.integrate1d_da_pyfai.coords else self.integrate1d_da_pyfai['qr'].values
+        y_values = self.integrate1d_da_pyfai.values
+        
+        # # Convert 'qr' from 1/nm to 1/Å if needed
+        # if x_axis == 'qr':
+        #     x_values = x_values/10
+        
+        # Create the plot
+        plt.figure(figsize=(10, 6))
+        plt.plot(x_values, y_values) #, marker='o', linestyle='-')
+        
+        plt.xlabel(f"{x_axis} (1/Å)" if x_axis == 'qr' else f"{x_axis} (Degrees)")
+        plt.ylabel('Intensity (a.u.)')
+        
+        title = f'1D Integrated Data ({x_axis})'
+        if projectname:
+            title = f"{projectname} - {title}"
+        
+        plt.title(title)
+        plt.grid(True)
+        
+        # Save the plot if pngPath is provided
+        if pngPath:
+            plt.savefig(pngPath, dpi=dpi)
+        
+        # plt.show()
+        # plt.close()
+
 class Integration1D(WAXSReduce):
     def __init__(self, waxs_instance=None):
         if waxs_instance:
@@ -1256,6 +1386,8 @@ class WAXSTOPAS(WAXSReduce):
         # Generate project name
         self.projectname = projectPath.name if isinstance(projectPath, Path) else Path(projectPath).name
         
+        self.integrate1d_da_pyfai = None
+        
     def generate_topas_projectpath(self, projectPath: Union[str, Path]):
         """
         Generate the project path where TOPAS related files will be stored.
@@ -1273,7 +1405,7 @@ class WAXSTOPAS(WAXSReduce):
         self.topasPath = projectPath / 'topas7_project'
         self.topasPath.mkdir(exist_ok=True)
         
-    def generate_xye_file(self, output_filename: Optional[str] = None):
+    def generate_xye_file_pg(self, output_filename: Optional[str] = None):
         """
         Generate a .xye file from the 1D integrated DataArray.
         
@@ -1294,7 +1426,7 @@ class WAXSTOPAS(WAXSReduce):
         # twotheta_values = 2 * np.arcsin(self.wavelength * self.integrate1d_da['qr'].values / (4 * np.pi))
         # twotheta_values = 2 * (180 / np.pi) * np.arcsin(self.wavelength * self.integrate1d_da['qr'].values / (4 * np.pi))
                 # Inline conversion from meters to Angstroms, and then calculate 'twotheta'
-        twotheta_values = 2 * np.arcsin((self.wavelength * 1e10) * self.integrate1d_da['qr'].values / (4 * np.pi)) * (180 / np.pi)  # Convert radians to degrees
+        twotheta_values = 2 * np.arcsin((self.wavelength * 1e10) * self.integrate1d_da['qr'].values*10 / (4 * np.pi)) * (180 / np.pi)  # Convert radians to degrees
         self.integrate1d_da = self.integrate1d_da.assign_coords({'twotheta': ('qr', twotheta_values)})
         
         # Create 'root_int_error' dimension based on intensity
@@ -1348,6 +1480,46 @@ class WAXSTOPAS(WAXSReduce):
             f.write("Additional Metadata:\n")
             for key, value in self.attribute_dict.items():
                 f.write(f"{key}: {value}\n")
+
+    def generate_xye_file_pyfai(self, output_filename: Optional[str] = None):
+        """
+        Generate a .xye file from the 1D integrated DataArray using pyFAI.
+        
+        Parameters:
+        - output_filename (Optional[str]): The name of the output .xye file. If not provided, a default name will be generated.
+        """
+        
+        # Check if the integrate1d_da_pyfai DataArray is None or contains only NaN values
+        if self.integrate1d_da_pyfai is None or np.isnan(self.integrate1d_da_pyfai.values).all():
+            # If it's None or filled with NaNs, run the 1D integration
+            self.run_pyFAI_integrate1D(npt=2250, 
+                                    method=("full", "histogram", "cython"), 
+                                    correctSolidAngle=True, 
+                                    polarization_factor=0.95)  # Example parameters, adjust as needed
+        
+        # Create 'twotheta' dimension based on 'qr'
+        twotheta_values = 2 * np.arcsin((self.wavelength * 1e10) * self.integrate1d_da_pyfai['qr'].values / (4 * np.pi)) * (180 / np.pi)  # Convert radians to degrees
+        self.integrate1d_da_pyfai = self.integrate1d_da_pyfai.assign_coords({'twotheta': ('qr', twotheta_values)})
+        
+        # Create 'root_int_error' dimension based on intensity
+        root_int_error = np.sqrt(self.integrate1d_da_pyfai.values)
+        self.integrate1d_da_pyfai = self.integrate1d_da_pyfai.assign_coords({'root_int_error': ('qr', root_int_error)})
+
+        # Define the output file path
+        if output_filename is None:
+            timestamp = datetime.now().strftime('%y%m%d_%H%M%S')
+            output_filename = f"{self.projectname}_{timestamp}_topas_pyfai.xye"
+        
+        output_filepath = self.topasPath / output_filename
+
+        # Write the .xye file
+        with output_filepath.open('w') as f:
+            for x, y, e in zip(self.integrate1d_da_pyfai['twotheta'].values, self.integrate1d_da_pyfai.values, self.integrate1d_da_pyfai['root_int_error'].values):
+                f.write(f"{x} {y} {e}\n")
+        
+        # Generate the complementary .txt file for metadata
+        txt_filename = output_filename.replace('.xye', '_metadata_pyfai.txt')
+        self.generate_metadata_txt(txt_filename)
 
 ## -- Custom Azimuthal Integration & Pixel Splitting -- ##
 class Azimuth1D(Integration1D):

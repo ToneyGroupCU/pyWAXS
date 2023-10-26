@@ -1,0 +1,22 @@
+Metadata Information
+====================
+Integration Method: ('full', 'histogram', 'cython')
+Number of Points (npt): 2250
+Correct Solid Angle: True
+Polarization Factor: 0.95
+Energy: 12.7 keV
+Wavelength: 9.76e-11 Å
+PONI Path: /Users/keithwhite/github_repositories/pyWAXS/example/LaB6_SRM660c_Calib/poni/231017_newponi_LaB6_5.6m_12.7keV_corrected_1150.1s_x-1.601_th0.500_5.00s_1116949_maxs.poni
+Mask Path: /Users/keithwhite/github_repositories/pyWAXS/example/LaB6_SRM660c_Calib/mask/LaB6_SRM660c_Calib_Mask.edf
+Incident Angle: 0.3
+Additional Metadata:
+sample: LaB6
+saxssdd: 5.6m
+energy: 12.7keV
+note: corrected
+clocktime: 1150.1s
+xpos: x-1.601
+thpos: th0.500
+exptime: 5.00s
+scanID: 1116949
+detext: maxs

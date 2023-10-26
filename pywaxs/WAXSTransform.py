@@ -55,6 +55,8 @@ class WAXSTransform:
         
         self.integrate1d_da = None
 
+        self.unit = None
+
     # def load_mask(self, da):
     def load_mask(self):
         """Load the mask file based on its file type."""
@@ -295,6 +297,7 @@ class WAXSTransform:
         return self.integrate1d_da
         # return intensity_1d, qaxis_1d
 
+    '''
     def pyFAI_integrate1D(self, 
                           dataarray, 
                           npt=2250,
@@ -372,3 +375,109 @@ class WAXSTransform:
 
         # print(method)
         return int1d_array
+    '''
+    
+    def pyFAI_integrate1D(self, 
+                        dataarray, 
+                        npt=2250,
+                        correctSolidAngle=True,
+                        method=("full", "histogram", "cython"),
+                        polarization_factor=0.95, # 95% for synchrotron polarization
+                        dark=None, 
+                        flat=None,
+                        radial_range=None, 
+                        azimuth_range=None):
+                        # unit="q_nm^-1"):
+                            #   unit="2th_deg"
+                        #   unit="q_A^-1"
+                        #   filename=None,
+                        #   mask=None, 
+                        #   method="csr", 
+                        #   variance=None, 
+                        #   error_model=None,
+                        #   dummy=None, 
+                        #   delta_dummy=None, 
+                        #   safe=True,
+                        #   normalization_factor=1.0,
+                        #   metadata=None
+            
+        """Calculate the azimuthal integration (1d) of a 2D image.
+
+        Multi algorithm implementation (tries to be bullet proof), suitable for SAXS, WAXS, ... and much more
+        Takes extra care of normalization and performs proper variance propagation.
+
+        :param ndarray data: 2D array from the Detector/CCD camera
+        :param int npt: number of points in the output pattern
+        :param str filename: output filename in 2/3 column ascii format
+        :param bool correctSolidAngle: correct for solid angle of each pixel if True
+        :param ndarray variance: array containing the variance of the data.
+        :param str error_model: When the variance is unknown, an error model can be given: "poisson" (variance = I), "azimuthal" (variance = (I-<I>)^2)
+        :param radial_range: The lower and upper range of the radial unit. If not provided, range is simply (min, max). Values outside the range are ignored.
+        :type radial_range: (float, float), optional
+        :param azimuth_range: The lower and upper range of the azimuthal angle in degree. If not provided, range is simply (min, max). Values outside the range are ignored.
+        :type azimuth_range: (float, float), optional
+        :param ndarray mask: array with  0 for valid pixels, all other are masked (static mask)
+        :param float dummy: value for dead/masked pixels (dynamic mask)
+        :param float delta_dummy: precision for dummy value
+        :param float polarization_factor: polarization factor between -1 (vertical) and +1 (horizontal).
+            0 for circular polarization or random,
+            None for no correction,
+            True for using the former correction
+        :param ndarray dark: dark noise image
+        :param ndarray flat: flat field image
+        :param IntegrationMethod method: IntegrationMethod instance or 3-tuple with (splitting, algorithm, implementation)
+        :param Unit unit: Output units, can be "q_nm^-1" (default), "2th_deg", "r_mm" for now.
+        :param bool safe: Perform some extra checks to ensure LUT/CSR is still valid. False is faster.
+        :param float normalization_factor: Value of a normalization monitor
+        :param metadata: JSON serializable object containing the metadata, usually a dictionary.
+        :return: Integrate1dResult namedtuple with (q,I,sigma) +extra informations in it.
+        """
+        
+        # Load Azimuthal Integrator from pyFAI
+        ai = pyFAI.load(str(self.poniPath))
+
+        # Load Mask
+        mask = self.load_mask()
+
+        # Run integration
+        qr_nm, intensity1D = ai.integrate1d_ng(dataarray.data,
+                                        npt=npt,
+                                        correctSolidAngle=correctSolidAngle,
+                                        method=method,
+                                        polarization_factor=polarization_factor, 
+                                        dark=dark, 
+                                        flat=flat,
+                                        radial_range=radial_range, 
+                                        azimuth_range=azimuth_range,
+                                        mask=mask)
+                                        
+        # Extract intensity and radial data
+        # intensity1D = int1D_array.I
+        # qr_nm = int1D_array.radial
+
+        qr_A = qr_nm/10
+        
+        # Get the unit, if not set use 'q_nm^-1'
+        unit = self.unit if self.unit else 'q_A^-1'
+
+        # Create DataArray for integrated 1D data
+        integrate1d_da = xr.DataArray(data=intensity1D,
+                                    dims=['qr'],
+                                    coords={'qr': ('qr', qr_A, {'units': unit})},
+                                    attrs=dataarray.attrs)
+
+        # Store in a class attribute for later usage
+        self.integrate1d_da_pyfai = integrate1d_da
+
+        # Store the method parameters as attributes in the class instance
+        self.npt = npt
+        self.method = method
+        self.correctSolidAngle = correctSolidAngle
+        self.polarization_factor = polarization_factor
+        self.dark = dark
+        self.flat = flat
+        self.radial_range = radial_range
+        self.azimuth_range = azimuth_range
+        self.unit = unit
+
+        return self.integrate1d_da_pyfai
