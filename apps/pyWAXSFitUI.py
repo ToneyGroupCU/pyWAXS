@@ -847,6 +847,7 @@ class ROISelector:
         self.ax.figure.canvas.draw()
 
 class Gaussian2DFit:
+    # Adapted From: https://lmfit.github.io/lmfit-py/examples/example_two_dimensional_peak.html
     def __init__(self, data_array: xr.DataArray):
         self.data_array = data_array
         self.result = None
