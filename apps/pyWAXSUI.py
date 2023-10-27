@@ -377,23 +377,6 @@ class MyNavigationToolbar(NavigationToolbar2QT):
                 energy, incident_angle, hdf5Path, projectName
             )
 
-    '''
-    # Modified load_project method to have similar functionality as loadData
-    def load_project(self):
-        options = QFileDialog.Options()
-        file, _ = QFileDialog.getOpenFileName(self.window, "Load Project Data", "", "NetCDF Files (*.nc);;All Files (*)", options=options)
-        if file:
-            self.window.ds = xr.open_dataset(file, engine='h5netcdf')
-            self.window.canvas.plot_data(self.window.ds['intensity'], self.window.ds['peak_positions'])
-
-        if self.window.ds:
-            max_intensity = self.window.ds['intensity'].max()
-            max_intensity = int(max_intensity.values)
-            self.window.slider_vmin.setMaximum(max_intensity)
-            self.window.slider_vmax.setMaximum(max_intensity)
-    
-    '''
-
     def load_project(self):
         # Check if a project is already loaded
         if hasattr(self.window, 'ds') and self.window.ds is not None:
