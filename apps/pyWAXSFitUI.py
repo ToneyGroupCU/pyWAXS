@@ -1,6 +1,6 @@
-from PyQt5.QtWidgets import QMainWindow, QApplication, QAction, QWidget, QFrame, QVBoxLayout, QHBoxLayout, QAction, QFileDialog, QToolBar, QPushButton, QSizePolicy, QSlider, QMessageBox, QTableWidget, QTableWidgetItem
+from PyQt5.QtWidgets import QMainWindow, QApplication, QAction, QWidget, QFrame, QVBoxLayout, QHBoxLayout, QAction, QFileDialog, QToolBar, QPushButton, QSizePolicy, QSlider, QMessageBox, QTableWidget, QTableWidgetItem, QLabel, QLineEdit, QGridLayout, QAbstractItemView
 from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon, QWindow
 
 import sys, os
 import numpy as np
@@ -16,6 +16,11 @@ from matplotlib.lines import Line2D
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
 from matplotlib.gridspec import GridSpec
 
+from scipy.interpolate import griddata
+import lmfit
+from lmfit.lineshapes import gaussian2d, lorentzian
+from lmfit.models import Model
+
 script_dir = os.path.dirname(os.path.abspath(__file__)) # Get the directory of the current script
 parent_dir = os.path.dirname(script_dir) # Get the parent directory
 main_dir = os.path.join(parent_dir, 'main') # Construct the path to the /main/ directory
@@ -29,96 +34,90 @@ class XrayApp(QMainWindow):
 
     def initUI(self):
         self.setWindowTitle('X-ray Data Analysis')
-        self.setGeometry(100, 100, 1400, 800)
+        self.setGeometry(100, 100, 1600, 800)
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.layout = QHBoxLayout()
         self.central_widget.setLayout(self.layout)
 
-        # Create a frame for the left part (plot + sliders)
+        # Left frame and layout (50%)
         self.left_frame = QFrame()
         self.left_layout = QVBoxLayout()
         self.left_frame.setLayout(self.left_layout)
-        self.layout.addWidget(self.left_frame)
+        self.layout.addWidget(self.left_frame, stretch=1)
 
-        # Create main frame for X-ray plot
+        # Main frame for X-ray plot (canvas1)
         self.main_frame = QFrame()
         self.main_layout = QVBoxLayout()
         self.main_frame.setLayout(self.main_layout)
         self.left_layout.addWidget(self.main_frame)
 
-        # Create matplotlib figure and attach it to main frame
         self.fig1, self.ax1 = plt.subplots()
         self.ax1.axis('off')
-
         self.canvas1 = MyCanvas(self.fig1, main_app=self, add_subplot=True)
-        # self.canvas1 = MyCanvas(self.fig1, main_app=self, add_subplot=True)
         self.main_layout.addWidget(self.canvas1)
 
         self.nav1 = MyNavigationToolbar(self.canvas1, self)
         self.main_layout.insertWidget(0, self.nav1)
 
-        # Initialize the output frame and layout
+        # Right frame and layout (50%)
         self.output_frame = QFrame()
         self.output_layout = QVBoxLayout()
+        self.layout.addWidget(self.output_frame, stretch=1)
         self.output_frame.setLayout(self.output_layout)
-        self.layout.addWidget(self.output_frame)  # add output_frame to main layout
-        
-        # Create matplotlib figure and set up GridSpec
-        self.fig2 = plt.figure(figsize=(10, 4))  # Adjust figsize as needed
-        gs = GridSpec(2, 2, width_ratios=[3, 2])  # ax2 will be twice as wide
-        
+
+        self.fig2 = plt.figure(figsize=(8, 4))
+        gs = GridSpec(2, 2, width_ratios=[3, 2])
         self.ax2 = self.fig2.add_subplot(gs[0, 0])
-        self.ax3 = self.fig2.add_subplot(gs[1, 0])  # You can leave this blank
+        self.ax3 = self.fig2.add_subplot(gs[1, 0])
         self.ax4 = self.fig2.add_subplot(gs[0, 1])
         self.ax5 = self.fig2.add_subplot(gs[1, 1])
-        
-        self.ax3.axis('off')  # Turn off ax3 if not used
-        
-        # Create a dictionary to map custom names to axes
+        self.ax3.axis('off')
+
         axes_dict = {'ax2': self.ax2, 'ax3': self.ax3, 'ax4': self.ax4, 'ax5': self.ax5}
         self.canvas2 = MyCanvas(self.fig2, main_app=self, add_subplot=False, axes=axes_dict)
+        self.nav2 = GaussianFitToolbar(self.canvas2, self)
+        self.nav2.setFixedWidth(600)
+        self.canvas2.ax2.set_title('Active ROI')
 
-        # # Create matplotlib figure and attach it to output frame
-        # self.fig2, axs = plt.subplots(2, 2, figsize=(4, 4))
-        # self.ax2, self.ax3, self.ax4, self.ax5 = axs.flatten()
-        # self.ax3.axis('off')
-        # Create a dictionary to map custom names to axes
-        # axes_dict = {'ax2': self.ax2, 'ax3': self.ax3, 'ax4': self.ax4, 'ax5': self.ax5}
-        # self.canvas2 = MyCanvas(self.fig2, main_app=self, add_subplot=False, axes=axes_dict)
+        self.output_layout.addWidget(self.nav2)
+        self.output_layout.addWidget(self.canvas2, stretch=2)  # 2/3 of the vertical space
 
-        self.output_layout.addWidget(self.canvas2)  # Now this should work
-        self.nav2 = NavigationToolbar(self.canvas2, self)
-        self.nav2.setSizePolicy(QSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed))
-        self.nav2.setFixedWidth(600)  # set to a suitable widthThere 
-        self.output_layout.insertWidget(0, self.nav2)
+        # Stat boxes (1/3 of the vertical space)
+        self.widget3 = QWidget()
+        self.grid3 = QGridLayout()
+        self.widget3.setLayout(self.grid3)
+        self.add_stat_box('Amplitude', 1, 0)
+        self.add_stat_box('Center X', 2, 0)
+        self.add_stat_box('Center Y', 3, 0)
+        self.add_stat_box('Chi-square', 1, 1)
+        self.add_stat_box('Reduced Chi-square', 2, 1)
+        self.add_stat_box('R-squared', 3, 1)
+        self.add_stat_box('Sigma X', 1, 2)
+        self.add_stat_box('Sigma Y', 2, 2)
+        self.add_stat_box('FWHM X', 3, 2)
+        self.add_stat_box('FWHM Y', 4, 2)
 
-        # Create QTableWidget object
+        self.output_layout.addWidget(self.widget3, stretch=1)
+
+        # Initialize the table with additional columns for fit statistics
         self.roi_table = QTableWidget()
-        self.roi_table.setColumnCount(5)
-        self.roi_table.setHorizontalHeaderLabels(['ROI #', 'q_xy (min)', 'q_xy (max)', 'q_z (min)', 'q_z (max)'])
-        
-        # Add table to the layout
+        self.header_labels = ['ROI #', 'q_xy (min)', 'q_xy (max)', 'q_z (min)', 'q_z (max)', 
+                            'Amplitude', 'Center X', 'Center Y', 'Sigma X', 'Sigma Y',
+                            'Chi-square', 'Reduced Chi-square', 'R-squared', 'FWHM X', 'FWHM Y']
+        self.roi_table.setColumnCount(len(self.header_labels))
+        self.roi_table.setHorizontalHeaderLabels(self.header_labels)
+        self.roi_table.setWordWrap(True)
+        self.roi_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.main_layout.addWidget(self.roi_table)
-        self.roi_table.cellClicked.connect(self.on_table_click)
-        # self.roi_table.cellClicked.connect(self.row_was_selected)
-        # self.roi_table.itemSelectionChanged.connect(self.row_was_selected)
 
         self.roi_selector = None
         self.coords = None
-        # self.roi_selector = ROISelector(self.ax1)
-        # self.roi_selector = ROISelector(self.ax1, self)
-        # self.canvas1.roi_selector = self.roi_selector
-        # self.roi_selector.activate()
-        # print(f"ROISelector in XrayApp: {self.roi_selector}, active: {self.roi_selector.rectangle_selector.active}")
-        # print(f"ROISelector in canvas1: {self.canvas1.roi_selector}, active: {self.canvas1.roi_selector.rectangle_selector.active}")
 
-        # def onclick(event):
-        #     print(f"Mouse click event: {event}")
-            
-        # self.fig1.canvas.mpl_connect('button_press_event', onclick)
-
+        # Add table to the layout
+        self.roi_table.cellClicked.connect(self.on_table_click)
+   
     def load_project(self):
         # Check if a project is already loaded
         if hasattr(self, 'ds') and self.ds is not None:
@@ -335,7 +334,8 @@ class XrayApp(QMainWindow):
             if ax is not None:
                 self.canvas2.colorbar.remove()
             self.canvas2.colorbar = None  # Reset to None either way
-        # *** Modified part ends here ***
+        
+        self.canvas2.ax2.set_title('Active ROI')
 
     def delete_active_roi(self):
         if self.canvas1.roi_selector.active_rect:
@@ -344,6 +344,112 @@ class XrayApp(QMainWindow):
             self.canvas1.roi_selector.active_rect = None
             self.canvas2.ax2.clear()
             self.canvas2.draw()
+
+    def add_stat_box(self, label, row, col):
+        lbl = QLabel(label)
+        le = QLineEdit(self)
+        le.setReadOnly(True)
+        setattr(self, f"stat_{label.replace(' ', '_').lower()}", le)  # Save as attribute
+        self.grid3.addWidget(lbl, 2*row-1, col)
+        self.grid3.addWidget(le, 2*row, col)
+
+    def update_stat_boxes(self, fit_stats_dict):
+        for key, value in fit_stats_dict.items():
+            stat_box_name = f"stat_{key.lower()}"
+            stat_box = getattr(self, stat_box_name, None)
+            if stat_box is not None:
+                stat_box.setText(str(value))
+
+    def perform_gaussian_fit(self):
+        fit_instance = Gaussian2DFit(self.sliced_ds)
+        fit_instance.construct_model()
+        fit_instance.perform_fit()
+        
+        # Print detailed fit report
+        lmfit.report_fit(fit_instance.result)
+        
+        fit_instance.plot_fit(self.canvas2.axes['ax4'], self.canvas2.axes['ax5'])
+        
+        # Get the fit statistics
+        fit_stats_dict = fit_instance.fit_statistics()
+        
+        # Update stat boxes
+        self.update_stat_boxes(fit_stats_dict)
+
+        # Identify the active ROI row
+        # active_row = self.roi_selector  # Assuming roi_selector contains the index of the active ROI
+        active_row = self.roi_table.currentRow()
+        # Check if there are existing values and prompt user for overwrite
+        if self.roi_table.item(active_row, 5) is not None:  # Assuming the first fit parameter is in column 5
+            reply = QMessageBox.question(self, 'Overwrite Existing Values', 
+                                        "Do you want to overwrite existing fit values for this ROI?",
+                                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.No:
+                return
+
+        # Update the table with new fit parameters
+        for col, header in enumerate(self.header_labels[5:]):  # Starting from 'Amplitude'
+            if header.replace(' ', '_').replace('-', '_').lower() in fit_stats_dict:
+                new_item = QTableWidgetItem(str(fit_stats_dict[header.replace(' ', '_').replace('-', '_').lower()]))
+                self.roi_table.setItem(active_row, col+5, new_item)  # col+5 because we start from 'Amplitude' which is at index 5
+                
+    # def perform_gaussian_fit(self):
+    #     fit_instance = Gaussian2DFit(self.sliced_ds)
+    #     fit_instance.construct_model()
+    #     fit_instance.perform_fit()
+        
+    #     # Print detailed fit report
+    #     lmfit.report_fit(fit_instance.result)
+        
+    #     fit_instance.plot_fit(self.canvas2.axes['ax4'], self.canvas2.axes['ax5'])
+        
+    #     # Get the fit statistics
+    #     stats = fit_instance.fit_statistics()
+    #     # self.display_fit_statistics(stats)
+
+    #     # Get fit statistics
+    #     fit_stats_dict = fit_instance.fit_statistics()
+        
+    #     # Update stat boxes
+    #     self.update_stat_boxes(fit_stats_dict)
+
+        # # Find the active row in the table (assuming it's selected)
+        # active_row = self.roi_table.currentRow()
+
+        # if active_row != -1:  # A row is selected
+        #     # Check for existing fit values in the active row
+        #     existing_value = self.roi_table.item(active_row, 5)  # Check one of the fit-related columns
+        #     if existing_value and existing_value.text():  
+        #         # Prompt user for overwriting
+        #         msg = QMessageBox()
+        #         msg.setIcon(QMessageBox.Warning)
+        #         msg.setText("Do you want to overwrite existing fit values for the active ROI?")
+        #         msg.setWindowTitle("Overwrite Confirmation")
+        #         msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+
+        #         retval = msg.exec_()
+        #         if retval != QMessageBox.Yes:
+        #             return  # Do not overwrite, return early
+
+        #     # Update the table with new fit statistics
+        #     for col_idx, label in enumerate(self.header_labels[5:], start=5):
+        #         item_value = fit_stats_dict.get(label.replace(' ', '_').lower(), "")
+        #         self.roi_table.setItem(active_row, col_idx, QTableWidgetItem(str(item_value)))
+
+        
+    def display_fit_statistics(self, stats):
+        # Assuming you have QLineEdit widgets stored in a dictionary self.stat_boxes
+        if stats is not None:
+            self.stat_boxes['Amplitude'].setText(str(stats['amplitude']))
+            self.stat_boxes['Center X'].setText(str(stats['centerx']))
+            self.stat_boxes['Center Y'].setText(str(stats['centery']))
+            self.stat_boxes['Chi-square'].setText(str(stats['chisqr']))
+            self.stat_boxes['Reduced Chi-square'].setText(str(stats['redchi']))
+            self.stat_boxes['R-squared'].setText(str(stats['rsquared']))
+            self.stat_boxes['Sigma X'].setText(str(stats['sigmax']))
+            self.stat_boxes['Sigma Y'].setText(str(stats['sigmay']))
+            self.stat_boxes['FWHM X'].setText(str(stats['fwhmx']))
+            self.stat_boxes['FWHM Y'].setText(str(stats['fwhmy']))
 
 class MyCanvas(FigureCanvas):
     def __init__(self, fig, main_app=None, add_subplot=True, axes=None, subplot_dims=None):
@@ -618,9 +724,9 @@ class ROISelector:
                             edgecolor='black', facecolor='none', linewidth=1.5)
 
         # Create the close box
-        close_box_size = 0.2
+        close_box_size = 0.15
         close_box_center_x = min(x1, x2) - 0.6 * close_box_size
-        close_box_center_y = max(y1, y2)
+        close_box_center_y = max(y1, y2) + 0.6 * close_box_size
         close_box = Rectangle((close_box_center_x - close_box_size / 2, close_box_center_y - close_box_size / 2), 
                         close_box_size, close_box_size, 
                         edgecolor='black', facecolor='gray')  # Solid gray fill
@@ -638,10 +744,10 @@ class ROISelector:
         half_size = close_box_size / 2
         x_line = [x - half_size, x + half_size]
         y_line = [y - half_size, y + half_size]
-        close_x1 = self.ax.add_line(Line2D(x_line, y_line, color='black'))
+        close_x1 = self.ax.add_line(Line2D(x_line, y_line, color='black', linewidth=1))
 
         x_line = [x + half_size, x - half_size]
-        close_x2 = self.ax.add_line(Line2D(x_line, y_line, color='black'))
+        close_x2 = self.ax.add_line(Line2D(x_line, y_line, color='black', linewidth=1))
 
         self.ax.add_patch(new_rect)
         self.ax.add_patch(close_box)
@@ -740,9 +846,323 @@ class ROISelector:
         
         self.ax.figure.canvas.draw()
 
+class Gaussian2DFit:
+    def __init__(self, data_array: xr.DataArray):
+        self.data_array = data_array
+        self.result = None
+
+    @staticmethod
+    def gaussian2d_rotated(x, y, amplitude, centerx, centery, sigmax, sigmay, rotation):
+        xp = (x - centerx) * np.cos(rotation) - (y - centery) * np.sin(rotation)
+        yp = (x - centerx) * np.sin(rotation) + (y - centery) * np.cos(rotation)
+        g = amplitude * np.exp(-((xp/sigmax)**2 + (yp/sigmay)**2) / 2.)
+        return g
+    
+    def construct_model(self):
+        # self.model = lmfit.models.Gaussian2dModel()
+        self.model = Model(self.gaussian2d_rotated, independent_vars=['x', 'y'])
+
+    def perform_fit(self):
+        x_vals = self.data_array.coords['q_xy'].values
+        y_vals = self.data_array.coords['q_z'].values
+        x, y = np.meshgrid(x_vals, y_vals)
+        z = self.data_array['intensity'].values
+
+        params = self.model.make_params(amplitude=np.max(z), centerx=np.mean(x_vals), centery=np.mean(y_vals),
+                                        sigmax=np.std(x_vals), sigmay=np.std(y_vals), rotation=0)
+        params['rotation'].set(value = .1, min=0, max=np.pi)
+        params['sigmax'].set(min=0)
+        params['sigmay'].set(min=0)
+
+        error = np.sqrt(z + 1)
+        self.result = self.model.fit(z.ravel(), x=x.ravel(), y=y.ravel(), params=params, weights=1/np.sqrt(error.ravel()))
+
+    def calculate_residuals(self):
+        if self.result is None:
+            return None
+
+        x, y = np.meshgrid(self.data_array.coords['q_xy'], self.data_array.coords['q_z'])
+        fit_data = self.model.func(x.flatten(), y.flatten(), **self.result.best_values)
+        return self.data_array['intensity'].values.flatten() - fit_data
+
+    def fit_statistics(self):
+        if self.result is None:
+            return None
+
+        # Create an empty dictionary to store fit statistics
+        fit_stats_dict = {}
+
+        # Chi-square
+        fit_stats_dict['chi_square'] = self.result.chisqr
+
+        # Akaike Information Criterion
+        fit_stats_dict['aic'] = self.result.aic
+
+        # Bayesian Information Criterion
+        fit_stats_dict['bic'] = self.result.bic
+
+        # Parameters and their uncertainties
+        for param_name, param in self.result.params.items():
+            fit_stats_dict[f"{param_name}_value"] = param.value
+            fit_stats_dict[f"{param_name}_stderr"] = param.stderr
+
+        return fit_stats_dict
+
+    def plot_fit(self, ax_fit, ax_residual):
+        if self.result is None:
+            return
+
+        # Clear the previous plots
+        ax_fit.clear()
+        ax_residual.clear()
+
+        x, y = np.meshgrid(self.data_array.coords['q_xy'], self.data_array.coords['q_z'])
+
+        # Generate grid for plotting
+        x_plot, y_plot = np.meshgrid(
+            np.linspace(x.min(), x.max(), 100),
+            np.linspace(y.min(), y.max(), 100)
+        )
+
+        # Fit plot
+        fit_data = self.model.func(x_plot, y_plot, **self.result.best_values)
+        ax_fit.pcolor(x_plot, y_plot, fit_data, shading='auto')
+        ax_fit.set_title('Fit')
+
+        # Residual plot
+        residuals = self.calculate_residuals()
+        Z_residual = griddata((x.flatten(), y.flatten()), residuals.flatten(), (x_plot, y_plot), method='linear', fill_value=0)
+        ax_residual.pcolor(x_plot, y_plot, Z_residual, shading='auto')
+        ax_residual.set_title('Residuals')
+
+        # Update canvas
+        ax_fit.figure.canvas.draw_idle()
+        ax_residual.figure.canvas.draw_idle()
+
+class GaussianFitToolbar(NavigationToolbar2QT):
+    def __init__(self, canvas, parent, coordinates=True):
+        super(GaussianFitToolbar, self).__init__(canvas, parent, coordinates)
+        
+        # Assuming the parent window is passed as `parent`
+        self.window = parent  
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+
+        # Create custom buttons
+        custom_buttons = [
+            {'name': '2D Gaussian Fit', 'icon': os.path.join(script_dir, 'icons/gaussian_icon.png'), 'function': self.window.perform_gaussian_fit},
+            # {'name': 'Toggle ROI Selector', 'icon': os.path.join(script_dir, 'icons/roi_icon.png'), 'function': self.toggle_roi_selector, 'toggle': True}  # Add your own icon path for ROI
+        ]
+        
+        for button in custom_buttons:
+            action = QAction(QIcon(button['icon']), '', self)
+            action.setToolTip(button['name'])
+            if button.get('toggle', False):
+                action.setCheckable(True)
+            action.triggered.connect(button['function'])
+            self.addAction(action)
+
+        # Move custom buttons to the front
+        for i in range(len(custom_buttons)):
+            action = self.actions()[-1]
+            self.removeAction(action)
+            self.insertAction(self.actions()[0], action)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     ex = XrayApp()
     ex.show()
     sys.exit(app.exec_())
+
+
+    '''
+        # self.setWindowTitle('X-ray Data Analysis')
+        # self.setGeometry(100, 100, 1600, 800)
+
+        # self.central_widget = QWidget()
+        # self.setCentralWidget(self.central_widget)
+        # self.layout = QHBoxLayout()
+        # self.central_widget.setLayout(self.layout)
+
+        # # Left part for canvas1 (50% of window)
+        # self.left_frame = QFrame()
+        # self.left_layout = QVBoxLayout()
+        # self.left_frame.setLayout(self.left_layout)
+        # self.layout.addWidget(self.left_frame, stretch=1)
+
+        # # Main canvas1 setup
+        # self.fig1, self.ax1 = plt.subplots()
+        # self.ax1.axis('off')
+        # self.canvas1 = MyCanvas(self.fig1, main_app=self, add_subplot=True)
+        # self.nav1 = MyNavigationToolbar(self.canvas1, self)
+        # self.main_layout = QVBoxLayout(self.left_frame)
+        # self.main_layout.addWidget(self.nav1)
+        # self.main_layout.addWidget(self.canvas1)
+
+        # # ROI table
+        # self.roi_table = QTableWidget()
+        # self.roi_table.setColumnCount(5)
+        # self.roi_table.setHorizontalHeaderLabels(['ROI #', 'q_xy (min)', 'q_xy (max)', 'q_z (min)', 'q_z (max)'])
+        # self.main_layout.addWidget(self.roi_table)
+        
+        # # Right part for canvas2 and stats (50% of window)
+        # self.right_frame = QFrame()
+        # self.right_layout = QVBoxLayout()
+        # self.right_frame.setLayout(self.right_layout)
+        # self.layout.addWidget(self.right_frame, stretch=1)
+        
+        # # Canvas2 setup
+        # self.fig2, self.axs = plt.subplots(2, 2, figsize=(8, 4))
+        # self.ax2, self.ax3, self.ax4, self.ax5 = self.axs.flatten()
+        # self.ax3.axis('off')
+        # self.canvas2 = MyCanvas(self.fig2, main_app=self, add_subplot=False)
+        # self.nav2 = MyNavigationToolbar(self.canvas2, self)
+        # self.nav2.setFixedWidth(600)
+        # self.right_layout.addWidget(self.nav2)
+        # self.right_layout.addWidget(self.canvas2, stretch=2)
+
+        # # Stats setup
+        # self.stats_widget = QWidget()
+        # self.stats_layout = QGridLayout()
+        # self.stats_widget.setLayout(self.stats_layout)
+        # self.add_stat_box('Amplitude', 1, 0)
+        # self.add_stat_box('Center X', 2, 0)
+        # self.add_stat_box('Center Y', 3, 0)
+        # self.add_stat_box('Chi-square', 1, 1)
+        # self.add_stat_box('Reduced Chi-square', 2, 1)
+        # self.add_stat_box('R-squared', 3, 1)
+        # self.add_stat_box('Sigma X', 1, 2)
+        # self.add_stat_box('Sigma Y', 2, 2)
+        # self.add_stat_box('FWHM X', 3, 2)
+        # self.add_stat_box('FWHM Y', 4, 2)
+        # self.right_layout.addWidget(self.stats_widget, stretch=1)
+
+    
+    def initUI(self):
+        self.setWindowTitle('X-ray Data Analysis')
+        self.setGeometry(100, 100, 1600, 800)
+
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.layout = QHBoxLayout()
+        self.central_widget.setLayout(self.layout)
+
+        # Create a frame for the left part (plot + sliders)
+        self.left_frame = QFrame()
+        self.left_layout = QVBoxLayout()
+        self.left_frame.setLayout(self.left_layout)
+        self.layout.addWidget(self.left_frame)
+
+        # Create main frame for X-ray plot
+        self.main_frame = QFrame()
+        self.main_layout = QVBoxLayout()
+        self.main_frame.setLayout(self.main_layout)
+        self.left_layout.addWidget(self.main_frame)
+
+        # Create matplotlib figure and attach it to main frame
+        self.fig1, self.ax1 = plt.subplots()
+        self.ax1.axis('off')
+
+        self.canvas1 = MyCanvas(self.fig1, main_app=self, add_subplot=True)
+        # self.canvas1 = MyCanvas(self.fig1, main_app=self, add_subplot=True)
+        self.main_layout.addWidget(self.canvas1)
+
+        self.nav1 = MyNavigationToolbar(self.canvas1, self)
+        self.main_layout.insertWidget(0, self.nav1)
+
+        # Initialize the output frame and layout
+        self.output_frame = QFrame()
+        self.output_layout = QVBoxLayout()
+        self.output_frame.setLayout(self.output_layout)
+        self.layout.addWidget(self.output_frame)  # add output_frame to main layout
+        
+        # Create matplotlib figure and set up GridSpec
+        self.fig2 = plt.figure(figsize=(8, 4))  # Adjust figsize as needed
+        gs = GridSpec(2, 2, width_ratios=[3, 2])  # ax2 will be twice as wide
+        
+        self.ax2 = self.fig2.add_subplot(gs[0, 0])
+        self.ax3 = self.fig2.add_subplot(gs[1, 0])  # You can leave this blank
+        self.ax4 = self.fig2.add_subplot(gs[0, 1])
+        self.ax5 = self.fig2.add_subplot(gs[1, 1])
+        
+        self.ax3.axis('off')  # Turn off ax3 if not used
+
+        self.output_layout = QVBoxLayout()
+        self.output_frame.setLayout(self.output_layout)
+        
+        # Use setStretch to control the vertical size
+        self.output_layout.setStretch(0, 3)  # For canvas2
+        self.output_layout.setStretch(1, 2)  # For widget3
+
+        # Create a QWidget for ax3 and set it to a grid layout
+        self.widget3 = QWidget()
+        self.grid3 = QGridLayout()
+        self.widget3.setLayout(self.grid3)
+
+        # Add 'Fit 2D Gaussian' button
+        self.btn_fit = QPushButton('Fit 2D Gaussian', self)
+        self.btn_fit.clicked.connect(self.perform_gaussian_fit)
+        self.grid3.addWidget(self.btn_fit, 0, 0)
+
+        # Add boxes and labels for fit statistics
+        self.add_stat_box('Amplitude', 1, 0)
+        self.add_stat_box('Center X', 2, 0)
+        self.add_stat_box('Center Y', 3, 0)
+        self.add_stat_box('Chi-square', 1, 1)
+        self.add_stat_box('Reduced Chi-square', 2, 1)
+        self.add_stat_box('R-squared', 3, 1)
+        self.add_stat_box('Sigma X', 1, 2)
+        self.add_stat_box('Sigma Y', 2, 2)
+        self.add_stat_box('FWHM X', 3, 2)
+        self.add_stat_box('FWHM Y', 4, 2)
+
+        # Add the QWidget for ax3 into your layout
+        self.output_layout.addWidget(self.widget3)
+        
+        # Create a dictionary to map custom names to axes
+        axes_dict = {'ax2': self.ax2, 'ax3': self.ax3, 'ax4': self.ax4, 'ax5': self.ax5}
+        self.canvas2 = MyCanvas(self.fig2, main_app=self, add_subplot=False, axes=axes_dict)
+
+        self.output_layout.addWidget(self.canvas2)  # Now this should work
+        self.nav2 = NavigationToolbar(self.canvas2, self)
+        self.nav2.setSizePolicy(QSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed))
+        self.nav2.setFixedWidth(600)  # set to a suitable widthThere 
+        self.output_layout.insertWidget(0, self.nav2)
+
+        # Create QTableWidget object
+        self.roi_table = QTableWidget()
+        self.roi_table.setColumnCount(5)
+        self.roi_table.setHorizontalHeaderLabels(['ROI #', 'q_xy (min)', 'q_xy (max)', 'q_z (min)', 'q_z (max)'])
+        
+        # Add table to the layout
+        self.main_layout.addWidget(self.roi_table)
+        self.roi_table.cellClicked.connect(self.on_table_click)
+        # self.roi_table.cellClicked.connect(self.row_was_selected)
+        # self.roi_table.itemSelectionChanged.connect(self.row_was_selected)
+
+        self.roi_selector = None
+        self.coords = None
+
+        # # Fix the heights of the canvases
+        # self.canvas1.setFixedHeight(400)
+        # self.canvas2.setFixedHeight(400)
+
+        # # Align the toolbars at the top
+        # self.main_layout.setAlignment(self.nav1, Qt.AlignTop)
+        # self.output_layout.setAlignment(self.nav2, Qt.AlignTop)
+
+        # # Allow canvases to expand but keep them at the same height
+        # self.main_layout.setStretchFactor(self.canvas1, 1)
+        # self.output_layout.setStretchFactor(self.canvas2, 1)
+        # self.roi_selector = ROISelector(self.ax1)
+        # self.roi_selector = ROISelector(self.ax1, self)
+        # self.canvas1.roi_selector = self.roi_selector
+        # self.roi_selector.activate()
+        # print(f"ROISelector in XrayApp: {self.roi_selector}, active: {self.roi_selector.rectangle_selector.active}")
+        # print(f"ROISelector in canvas1: {self.canvas1.roi_selector}, active: {self.canvas1.roi_selector.rectangle_selector.active}")
+
+        # def onclick(event):
+        #     print(f"Mouse click event: {event}")
+            
+        # self.fig1.canvas.mpl_connect('button_press_event', onclick)
+    '''
+     
