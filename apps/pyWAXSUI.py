@@ -1354,11 +1354,18 @@ class MyWindow(QMainWindow):
         action_create_calibrant.triggered.connect(self.create_calibrant)
         self.customToolbar.addAction(action_create_calibrant)
 
-        # Add a button to launch the new application with an icon
+        # Add a button to launch the peak fitting application
+        launch_peakfit_icon_path = os.path.join(script_dir, 'icons/gaussian_icon.png')
+        action_launch_peakfit = QAction(QIcon(launch_peakfit_icon_path), "2D Peak Fitting", self)
+        action_launch_peakfit.triggered.connect(self.launch_peakfit_app)
+        self.customToolbar.addAction(action_launch_peakfit)
+
+        # Add a button to launch the simulation application
         launch_sim_icon_path = os.path.join(script_dir, 'icons/launch_sim_icon.png')
         action_launch_sim = QAction(QIcon(launch_sim_icon_path), "GIWAXS Simulation App", self)
         action_launch_sim.triggered.connect(self.launch_sim_app)
         self.customToolbar.addAction(action_launch_sim)
+
 
 # ============ UI Update Methods ============
     def update_vmin(self):
@@ -1629,10 +1636,17 @@ class MyWindow(QMainWindow):
     def launch_sim_app(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))  # Get the directory of the current script
         try:
-            subprocess.run(["bash", "-c", f"cd {script_dir} && eval \"$(conda shell.bash hook)\" && conda activate pyWAXS && python3 pyWAXSim.py"])
+            subprocess.run(["bash", "-c", f"cd {script_dir} && eval \"$(conda shell.bash hook)\" && conda activate pyWAXS && python3 pyWAXSimUI.py"])
         except Exception as e:
             print(f"An error occurred: {e}")
 
+    # Slot to launch the peak fitting application
+    def launch_peakfit_app(self):
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # Get the directory of the current script
+        try:
+            subprocess.run(["bash", "-c", f"cd {script_dir} && eval \"$(conda shell.bash hook)\" && conda activate pyWAXS && python3 pyWAXSFitUI.py"])
+        except Exception as e:
+            print(f"An error occurred: {e}")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

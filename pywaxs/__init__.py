@@ -1,7 +1,7 @@
 from . import WAXSAFF
 from .WAXSTransform import WAXSTransform
 from .WAXSReduce import WAXSReduce, WAXSTOPAS
-from .WAXSDiffSim import WAXSDiffSim
+from .WAXSSim import WAXSSim
 from .WAXSSearch import WAXSSearch
 from .WAXSFileManager import WAXSFileManager
 
