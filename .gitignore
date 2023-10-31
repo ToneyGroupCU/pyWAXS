@@ -8,7 +8,8 @@ outputs/
 debugging/
 notebooks_local/
 bash/
-users/
+users/kwhite/
+users/ddayton/
 # main/WAXSExperiment.py
 # example/
 # KW_WAXSAnalysis.ipynb

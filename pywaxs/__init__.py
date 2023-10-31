@@ -1,4 +1,5 @@
 from . import WAXSAFF
+from .WAXSUser import WAXSUser, WAXSProject
 from .WAXSTransform import WAXSTransform
 from .WAXSReduce import WAXSReduce, WAXSTOPAS
 from .WAXSSim import WAXSSim

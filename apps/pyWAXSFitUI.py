@@ -23,7 +23,8 @@ from lmfit.models import Model
 
 script_dir = os.path.dirname(os.path.abspath(__file__)) # Get the directory of the current script
 parent_dir = os.path.dirname(script_dir) # Get the parent directory
-main_dir = os.path.join(parent_dir, 'main') # Construct the path to the /main/ directory
+# main_dir = os.path.join(parent_dir, 'main') # Construct the path to the /main/ directory
+main_dir = os.path.join(parent_dir, 'pywaxs') # Construct the path to the /main/ directory
 sys.path.append(main_dir) # Add the /main/ directory to sys.path
 
 class XrayApp(QMainWindow):
