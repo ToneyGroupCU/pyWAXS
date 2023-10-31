@@ -6,8 +6,9 @@ nslsii_pyWAXS/
 refactored/
 outputs/
 debugging/
-notebooks/
+notebooks_local/
 bash/
+users/
 # main/WAXSExperiment.py
 # example/
 # KW_WAXSAnalysis.ipynb
