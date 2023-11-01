@@ -5,6 +5,7 @@ from .WAXSReduce import WAXSReduce, WAXSTOPAS
 from .WAXSSim import WAXSSim
 from .WAXSSearch import WAXSSearch
 from .WAXSFileManager import WAXSFileManager
+from .WAXSStructureManager import WAXSStructureManager
 
 # from .WAXSAnalyze import WAXSAnalyze
 # from .WAXSComputeCrystal import WAXSComputeCrystal
