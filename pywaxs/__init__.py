@@ -9,6 +9,8 @@ from .WAXSStructureManager import WAXSStructureManager
 from .WAXSFit import WAXSFit
 from .WAXSFit import generate_random_2D_gaussian
 from .WAXSFit import generate_polar_gaussian
+from .WAXSFit import generate_combined_gaussian
+from .WAXSFit import CombinedGaussianFitter
 
 # from .WAXSAnalyze import WAXSAnalyze
 # from .WAXSComputeCrystal import WAXSComputeCrystal
