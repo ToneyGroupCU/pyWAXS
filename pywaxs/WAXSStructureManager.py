@@ -23,6 +23,7 @@ class WAXSStructureManager:
         self.structuresPath = user_instance.structuresPath
         self.structurePath = None
         self.vaspPath = None
+        self.simPath = None
 
     def addStructure(self):
         structurename = input("Enter the structure name: ")
@@ -65,6 +66,10 @@ class WAXSStructureManager:
         vasp_folder = self.structurePath / "vasp"
         if not vasp_folder.exists():
             vasp_folder.mkdir()
+
+        sim_folder = self.structurePath / "simulations"
+        if not sim_folder.exists():
+            sim_folder.mkdir()
 
         dest = vasp_folder / source.name
         shutil.copy(source, dest)
@@ -121,16 +126,30 @@ class WAXSStructureManager:
         if not structure_list:
             print("No structures available.")
             return
-        
+
         dropdown = Dropdown(
-            options=structure_list,
+            options=['Select a structure...'] + structure_list,
             description='Select Structure:',
         )
         display(dropdown)
 
         def on_change(change):
             if change['type'] == 'change' and change['name'] == 'value':
+                if change['new'] == 'Select a structure...':
+                    print("Please select a structure.")
+                    return
+
                 self.structurePath = self.structuresPath / change['new']
+                self.vaspPath = None
+                self.simPath = self.structurePath / 'simulations'
+                
+                # Try to find a .vasp file within the structure folder
+                vasp_files = list((self.structurePath / 'vasp').glob('*.vasp'))
+                if vasp_files:
+                    if len(vasp_files) > 1:
+                        print("Warning: Multiple .vasp files found. Using the first one.")
+                    self.vaspPath = vasp_files[0]
+                    
                 print(f"Structure {change['new']} selected.")
         
         dropdown.observe(on_change)

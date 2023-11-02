@@ -6,6 +6,9 @@ from .WAXSSim import WAXSSim
 from .WAXSSearch import WAXSSearch
 from .WAXSFileManager import WAXSFileManager
 from .WAXSStructureManager import WAXSStructureManager
+from .WAXSFit import WAXSFit
+from .WAXSFit import generate_random_2D_gaussian
+from .WAXSFit import generate_polar_gaussian
 
 # from .WAXSAnalyze import WAXSAnalyze
 # from .WAXSComputeCrystal import WAXSComputeCrystal

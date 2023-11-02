@@ -11,14 +11,32 @@ from typing import Union
 import os
 from contextlib import redirect_stdout
 
-
 # Custom Imports
 import WAXSAFF
+
+# load a structure manager class instance
+# grab valid vaspPath and simPath pathlib references
+    # remove loader specific imports
+
+# with the structuremanager, the first time a simulation is ever run for that structure:
+    # initialize and create a sim_history.nc file that contains all previous simulation input parameters
+        # this should include a, b, c, alpha, beta, gamma so that refined CIFs aren't doubly counted.
+    # before running the simulation, check the sim_history.nc file for that structure folder
+    # if the simulation has been run, access the corresponding structurename_datetime.nc file
+# when a simulation is run for the first time (no matching parameter files in sim_history.nc)
+    # create a structurename_datetime.nc file with the run input parameter attributes and outcome dataarray.
+    # write the input parameters to the pandas style dataframe stored in the sim_history.nc, updating the sim_history.nc file.
+# create WAXSDataLoader/DataExporter methods for:
+    # creating sim_history.nc files
+    # updating sim_history.nc files
+    # creating structurename_datetime.nc files
+    # loading existing structurename_datetime.nc files
+# create a class for viewing and operating on CIFs
 
 class WAXSSim:
     def __init__(self, 
                 #  *file_paths: Union[Path, str], 
-                 poscarPath: Union[Path, str],
+                 vaspPath: Union[Path, str],
                  simPath: Union[Path, str], 
                  sigma_theta = 0.01, 
                  sigma_phi = 100, 
@@ -38,11 +56,11 @@ class WAXSSim:
         self.thetaX = thetaX # initial rotation about x-axis
         self.thetaY = thetaY # initial rotation about y-axis
         
-        self.poscarPath = poscarPath # pathlib or string path variable for poscar.
+        self.vaspPath = vaspPath # pathlib or string path variable for poscar.
         self.simPath = simPath
         self.projectname = projectname
         
-        self.a1, self.a2, self.a3, self.position = self.readPOSCAR(address = poscarPath)
+        self.a1, self.a2, self.a3, self.position = self.readPOSCAR(address = vaspPath)
 
         self.M = [self.a1, self.a2, self.a3] # lattice parameter matrix
         self.M = np.asarray(self.M)
@@ -320,7 +338,7 @@ class WAXSSim:
                 self.intensityMap[x,y] = np.sum(Intensity)
 
         return self.intensityMap
-        
+
     def da_Intensity(self):
         self.iMiller = self.hkl_dimension * 2 + 1
 
