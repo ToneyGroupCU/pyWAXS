@@ -503,7 +503,11 @@ class CombinedGaussianFitter:
             coords = np.column_stack(peaks)
             clustering = DBSCAN(eps=3, min_samples=2).fit(coords)
             labels = clustering.labels_
-            cluster_means = [geometric_mean(coords[labels == i], axis=0) for i in set(labels) if i != -1]
+            # cluster_means = [geometric_mean(coords[labels == i], axis=0) for i in set(labels) if i != -1]
+            
+            # Calculate geometric mean of each cluster
+            cluster_means = [gmean(coords[labels == i], axis=0) for i in set(labels) if i != -1]
+
             if cluster_means:
                 center_estimate = max(cluster_means, key=lambda x: img_xr[tuple(x.astype(int))])
             else:
@@ -532,7 +536,8 @@ class CombinedGaussianFitter:
         chi_vals = np.degrees(np.pi / 2 - np.arctan2(q_z, q_xy))
 
         # Call the peak identification method
-        center_estimate, dog, peaks = self.initial_peak_identification(intensity, threshold_ratio=0.5)
+        # center_estimate, dog, peaks = self.initial_peak_identification(intensity, threshold_ratio=0.5)
+        center_estimate = np.nan
 
         if not np.isnan(center_estimate).any():
             # Convert the center estimate to qr and chi values
@@ -571,7 +576,6 @@ class CombinedGaussianFitter:
 
         # Perform initial fit
         self.result = self.model.fit(intensity.ravel(), q_xy=q_xy.ravel(), q_z=q_z.ravel(), params=params, weights=1/np.sqrt(error.ravel()))
-
 
     def intermediate_fit(self):
         # Unlock weight and lock fwhm_qr, fwhm_chi, center_qr, center_chi
